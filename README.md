@@ -1,44 +1,52 @@
-# SiCepat Bulk Phone Rechecker
+# OneOps — AntarXpress
 
-A local web app to process bulk SiCepat shipment Excel files and retrieve unmasked
-recipient phone numbers from the SiCepat POD API.
+Operations platform with two modules under **DATA CENTER**:
+
+- **Data Warrior** (`/ops/data-warrior`) — centralized company document
+  repository. Files live in Cloudflare R2; folders, metadata, versioning,
+  role-based permissions and audit logs live in MySQL.
+- **Number Rechecking** (`/ops/number-rechecking`) — bulk SiCepat AWB phone
+  rechecker (preserved from v1, now behind login).
 
 ## Stack
 
-- **Frontend:** Vue 3, TypeScript, Vite, Tailwind CSS, Lucide Icons, Axios, SheetJS
-- **Backend:** Node.js, Express, Axios (a local proxy to avoid browser CORS)
+- **Frontend:** Vue 3 + TypeScript, Vite, Tailwind CSS, vue-router 4, Lucide icons
+- **Backend:** Node.js (14+), Express, mysql2, AWS SDK v3 (S3-compatible → Cloudflare R2), bcryptjs
+- **Auth:** session cookie (HMAC-SHA256 signed, HttpOnly), users/roles in MySQL
 
-## Requirements
-
-- Node.js 14.18+ (tested with 14.20). Node 16/18/20/22 also work.
-
-## Install & run
+## Local development
 
 ```bash
 npm install
-npm run dev
+cp .env.example .env    # fill in DB + SESSION_SECRET (+ R2 for uploads)
+npm run dev             # Vite on :5173 (proxies /api), Express on :3001
 ```
 
-Then open http://localhost:5173.
+Useful scripts:
 
-- `npm run dev` starts the Vite dev server (port 5173) and the Express proxy (port 3001).
-- Production-style local usage: `npm run build` then `npm start`, and open http://localhost:3001.
-- Environment variables (set before starting the proxy): `SICEPAT_BASE_URL` (default `https://podapi.sicepat.com/`) and `PORT` (default `3001`).
+```bash
+npm test                # unit tests (permission engine, session tokens, sanitization)
+npm run typecheck       # vue-tsc
+npm run build           # production frontend build → dist/
+npm start               # Express serving the built SPA on :3001
+npm run r2:check        # live R2 connectivity + upload round-trip probe
+npm run hash-password 'pw'  # bcrypt hash for creating users via SQL
+```
 
-## Usage
+## Documentation
 
-1. Open **Settings**, enter your **Bearer Token**, **X-Permission-Token**, and **User ID**, then **Save Changes**.
-2. Return to the **Dashboard** and upload a SiCepat Excel file (columns `Resi`, `Penerima`, `No HP Penerima`, `Kota_Tujuan`, `NAMA YANG MENGERJAKAN`).
-3. Click **Start Processing**.
-4. Monitor progress and results, then **Download Excel** to get a new `*-rechecked.xlsx` file.
+| Doc | Contents |
+|---|---|
+| [database/README.md](database/README.md) | phpMyAdmin import guide, verification, rollback |
+| [docs/R2-SETUP.md](docs/R2-SETUP.md) | R2 credentials, CORS for browser uploads, troubleshooting |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | cPanel + Passenger deployment, step by step |
+| [docs/API.md](docs/API.md) | Backend API reference |
+| [docs/IMPLEMENTATION-REPORT.md](docs/IMPLEMENTATION-REPORT.md) | What was built, what's tested, what needs manual setup |
 
-## Behavior notes
+## First run
 
-- AWB numbers are treated as strings (leading zeros preserved).
-- Requests are sent one at a time by default, with a configurable delay, retry/backoff, and
-  pause / resume / stop controls.
-- 401/403 stop the run with a notice; 429/5xx/network errors are retried.
-- Duplicate or empty AWBs are skipped; failed records keep their original phone numbers.
-- The original uploaded file is never overwritten — results are written to a new file.
-- Credentials are stored in `localStorage`, never logged, and only sent to the SiCepat API
-  through the local proxy.
+1. Import `database/migrations/*.sql` (see database guide).
+2. Create an admin: set `BOOTSTRAP_ADMIN_PASSWORD` before first start, or run
+   the SQL in database/README.md §8.
+3. Log in, open Data Warrior, optionally import the root-folder seed and set
+   per-role permissions via folder → Manage Permissions.

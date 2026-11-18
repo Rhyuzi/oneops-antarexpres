@@ -1,8 +1,8 @@
 {
-  "name": "sicepat-bulk-phone-rechecker",
-  "version": "1.0.0",
+  "name": "oneops-antarexpres",
+  "version": "2.0.0",
   "private": true,
-  "description": "Local tool to recheck recipient phone numbers from SiCepat AWB numbers in bulk.",
+  "description": "OneOps — AntarXpress operations platform: Data Warrior document management (Cloudflare R2) and SiCepat number rechecking.",
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "node server/index.js",
@@ -10,13 +10,21 @@
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node tests/test-core.js",
+    "r2:check": "node server/scripts/r2-check.js",
+    "hash-password": "node server/scripts/hash-password.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.600.0",
+    "@aws-sdk/s3-request-presigner": "3.600.0",
     "axios": "^1.7.7",
+    "bcryptjs": "^2.4.3",
     "express": "^4.19.2",
     "lucide-vue-next": "^0.441.0",
+    "mysql2": "^3.11.0",
     "vue": "3.4.38",
+    "vue-router": "4.3.2",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

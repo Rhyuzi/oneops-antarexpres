@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { store } from '../store'
-import { ArrowLeft, Eye, EyeOff, Save, ShieldAlert, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, Eye, EyeOff, Save, Settings, ShieldAlert, Trash2 } from 'lucide-vue-next'
 
 const form = reactive({
   bearerToken: store.state.settings.bearerToken,
@@ -33,11 +33,12 @@ function clear(): void {
 
 <template>
   <div class="mx-auto max-w-2xl space-y-6">
-    <div class="flex items-center justify-between">
-      <h2 class="section-title">API Credentials</h2>
-      <button class="btn btn-ghost" @click="store.goTo('dashboard')">
-        <ArrowLeft :size="18" /> Back to Dashboard
-      </button>
+    <!-- Page header -->
+    <div>
+      <h1 class="flex items-center gap-2 text-xl font-bold text-slate-900">
+        <Settings :size="22" class="text-indigo-600" /> Rechecker Settings
+      </h1>
+      <p class="mt-1 text-sm text-slate-500">SiCepat API credentials — stored only in your browser</p>
     </div>
 
     <div class="card p-6">
@@ -59,8 +60,8 @@ function clear(): void {
               class="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
               @click="show.bearer = !show.bearer"
             >
-              <EyeOff v-if="show.bearer" :size="18" />
-              <Eye v-else :size="18" />
+              <Eye v-if="!show.bearer" :size="18" />
+              <EyeOff v-else :size="18" />
             </button>
           </div>
         </div>
@@ -82,8 +83,8 @@ function clear(): void {
               class="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
               @click="show.permission = !show.permission"
             >
-              <EyeOff v-if="show.permission" :size="18" />
-              <Eye v-else :size="18" />
+              <Eye v-if="!show.permission" :size="18" />
+              <EyeOff v-else :size="18" />
             </button>
           </div>
         </div>
@@ -93,43 +94,33 @@ function clear(): void {
           <input
             id="user-id"
             v-model="form.userId"
-            type="text"
             class="input"
             autocomplete="off"
-            spellcheck="false"
-            placeholder="Your SiCepat user ID (sent as user_id)"
+            placeholder="SiCepat user id"
           />
-          <p class="mt-1.5 text-xs text-slate-400">
-            This is your own account identifier. It is never hardcoded or shared.
-          </p>
         </div>
-      </div>
 
-      <div class="mt-6 flex flex-wrap items-center gap-3">
-        <button class="btn btn-primary" @click="save">
-          <Save :size="18" /> Save Changes
-        </button>
-        <button class="btn btn-secondary" @click="clear">
-          <Trash2 :size="18" /> Clear Credentials
-        </button>
-        <span v-if="saved" class="text-sm font-medium text-emerald-600">Saved ✓</span>
+        <div class="flex flex-wrap items-center gap-3">
+          <button class="btn btn-primary" @click="save">
+            <Save :size="18" /> Save Changes
+          </button>
+          <router-link class="btn btn-secondary" to="/ops/number-rechecking">
+            <ArrowLeft :size="18" /> Back to Rechecker
+          </router-link>
+          <button class="btn btn-ghost" @click="clear">
+            <Trash2 :size="18" /> Clear
+          </button>
+          <span v-if="saved" class="text-sm font-medium text-emerald-600">Saved ✓</span>
+        </div>
       </div>
     </div>
 
-    <div class="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-      <div class="flex gap-3">
-        <ShieldAlert class="mt-0.5 shrink-0 text-amber-600" :size="20" />
-        <div class="text-sm text-amber-800">
-          <p class="font-semibold">Security notice</p>
-          <p class="mt-1">
-            These credentials are stored in your browser's <code>localStorage</code>, which is
-            readable by JavaScript running on this origin. That is an XSS-related risk: avoid
-            pasting untrusted scripts into this app. Credentials are never written to logs and
-            are only transmitted to the SiCepat API through the local proxy — never to any
-            third-party service.
-          </p>
-        </div>
-      </div>
+    <div class="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+      <ShieldAlert class="mt-0.5 shrink-0 text-amber-600" :size="18" />
+      <p class="text-sm text-amber-800">
+        These credentials stay in your browser's localStorage and are only sent to the SiCepat
+        API through the OneOps proxy. Never share them.
+      </p>
     </div>
   </div>
 </template>

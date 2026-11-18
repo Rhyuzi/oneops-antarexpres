@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { store } from '../store'
-import StatCard from './StatCard.vue'
-import UploadZone from './UploadZone.vue'
-import ResultsTable from './ResultsTable.vue'
+import StatCard from '../components/StatCard.vue'
+import UploadZone from '../components/UploadZone.vue'
+import ResultsTable from '../components/ResultsTable.vue'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,6 +14,7 @@ import {
   Pause,
   Play,
   Search,
+  Settings,
   Settings2,
   SkipForward,
   Square,
@@ -80,6 +81,20 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
 
 <template>
   <div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h1 class="text-xl font-bold text-slate-900">Number Rechecking</h1>
+        <p class="text-sm text-slate-500">
+          Recheck recipient phone numbers from SiCepat AWB data
+          <span v-if="hasCredentials" class="ml-1 font-medium text-emerald-600">· credentials configured</span>
+        </p>
+      </div>
+      <router-link class="btn btn-secondary" to="/ops/number-rechecking/settings">
+        <Settings :size="16" /> Settings
+      </router-link>
+    </div>
+
     <!-- Statistics -->
     <section class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
       <StatCard label="Total AWB" :value="stats.total" :icon="FileSpreadsheet" tone="info" />
@@ -103,9 +118,9 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
         <Settings2 :size="20" />
         <span>Configure your Bearer Token, X-Permission-Token and User ID before processing.</span>
       </div>
-      <button class="btn btn-secondary shrink-0" @click="store.goTo('settings')">
+      <router-link class="btn btn-secondary shrink-0" to="/ops/number-rechecking/settings">
         Open Settings
-      </button>
+      </router-link>
     </div>
 
     <!-- Upload -->

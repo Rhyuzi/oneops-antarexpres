@@ -1,148 +1,79 @@
 "use strict";
 
 /**
- * SiCepat Bulk Phone Rechecker — local API proxy.
+ * OneOps backend — AntarXpress operations platform.
  *
- * The browser cannot call the SiCepat API directly (CORS), so this small
- * Express server forwards `/api/awb-detail` requests. It runs only on the
- * local machine and never logs credentials.
+ *  - Session auth (HMAC cookie) + users/roles from MySQL
+ *  - Data Warrior storage API (folders/files/permissions/audit) on Cloudflare R2
+ *  - Number Rechecking proxy (SiCepat) — preserved, now auth-protected
+ *
+ * Degrades gracefully: missing SESSION_SECRET disables login (503), missing
+ * DB or R2 config keeps the server up and reports status on /api/health.
  */
 
 const express = require("express");
-const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
-const app = express();
-const PORT = Number(process.env.PORT) || 3001;
+const { config } = require("./config");
+const { checkDb } = require("./db");
+const r2 = require("./r2");
+const auth = require("./auth");
+const storageRouter = require("./routes/storage");
+const recheckRouter = require("./routes/recheck");
 
-// Base URL is configurable via SICEPAT_BASE_URL (defaults to the production
-// SiCepat POD origin). The AWB detail path is appended to it.
-const SICEPAT_BASE_URL =
-  (process.env.SICEPAT_BASE_URL || "https://podapi.sicepat.com/")
-    .trim()
-    .replace(/\/+$/, "") + "/";
-const SICEPAT_URL = `${SICEPAT_BASE_URL}web/v1/tracking/awbDetail`;
+const app = express();
+const PORT = config.port;
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 
-// Local-only CORS (development convenience; the Vite dev server proxies /api
-// to this server so requests are normally same-origin anyway).
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, x-permission-token",
-  );
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
+// The frontend is served same-origin (Vite dev proxy / production static),
+// so permissive CORS is unnecessary — removed from the original proxy.
+app.use(auth.attachUser);
+
+// ---------------------------------------------------------------------------
+// Health / status
+// ---------------------------------------------------------------------------
+
+app.get("/api/health", async (_req, res) => {
+  const db = await checkDb();
+  const { r2Configured } = require("./config");
+  // Do not contact R2 on every health check (rate limits); report config only.
+  res.json({
+    ok: db.ok,
+    service: "oneops",
+    version: "2.0.0",
+    database: db,
+    storage: { configured: r2Configured() },
+    loginEnabled: auth.loginEnabled(),
+  });
 });
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, service: "sicepat-proxy" });
+app.get("/api/status/r2", auth.requireAuth, auth.requireRole("super_admin"), async (_req, res) => {
+  const result = await r2.checkR2();
+  res.json({ ok: result.ok, ...result });
 });
 
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
 
-function headerString(value) {
-  if (Array.isArray(value)) return value[0] || "";
-  return typeof value === "string" ? value : "";
-}
+app.post("/api/auth/login", auth.handleLogin);
+app.post("/api/auth/logout", auth.handleLogout);
+app.get("/api/auth/me", auth.handleMe);
 
-function extractBearerToken(authorization) {
-  const header = headerString(authorization);
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  return match ? match[1].trim() : "";
-}
+// ---------------------------------------------------------------------------
+// Feature APIs
+// ---------------------------------------------------------------------------
 
-app.post("/api/awb-detail", async (req, res) => {
-  const body = req.body || {};
-  const awbNumber = body.awb_number;
-  const userId = body.user_id;
+app.use("/api/storage", auth.requireAuth, storageRouter);
+app.use("/api", recheckRouter);
 
-  // Credentials arrive via HTTP headers (never in the JSON body).
-  const bearerToken = extractBearerToken(req.headers.authorization);
-  const permissionToken = headerString(req.headers["x-permission-token"]);
+// ---------------------------------------------------------------------------
+// Static frontend (production)
+// ---------------------------------------------------------------------------
 
-  if (!isNonEmptyString(bearerToken) || !isNonEmptyString(permissionToken)) {
-    return res.status(400).json({
-      ok: false,
-      status: 400,
-      message:
-        "Missing credentials. Configure Bearer Token and X-Permission-Token in Settings.",
-    });
-  }
-
-  if (!isNonEmptyString(awbNumber)) {
-    return res
-      .status(400)
-      .json({ ok: false, status: 400, message: "Missing AWB number." });
-  }
-
-  try {
-    const response = await axios.post(
-      SICEPAT_URL,
-      {
-        key: "handphone",
-        type: "-",
-        awb_number: String(awbNumber),
-        user_id: String(userId || ""),
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${bearerToken}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Origin: "https://pod.sicepat.com",
-          Referer: "https://pod.sicepat.com/",
-          "x-permission-token": permissionToken,
-        },
-        timeout: 20000,
-      },
-    );
-
-    const data = response.data || {};
-    const value =
-      data.value === undefined || data.value === null ? "" : String(data.value);
-
-    return res.json({ ok: true, status: response.status, value });
-  } catch (err) {
-    const status = err.response ? err.response.status : 0;
-    const upstreamData = err.response ? err.response.data : null;
-
-    // Debug response from SiCepat. Never log credentials.
-    console.error("[sicepat-proxy] Upstream status:", status);
-    console.error(
-      "[sicepat-proxy] Upstream response:",
-      JSON.stringify(upstreamData, null, 2),
-    );
-
-    let message;
-
-    if (status === 401)
-      message = "Authorization failed — token is invalid or expired.";
-    else if (status === 403) message = "Forbidden — insufficient permission.";
-    else if (status === 429) message = "Rate limited by SiCepat.";
-    else if (status === 400)
-      message = "SiCepat rejected the request (bad request).";
-    else if (status === 404) message = "AWB not found.";
-    else if (status >= 500) message = `SiCepat server error (HTTP ${status}).`;
-    else if (status === 0) message = "Network error — could not reach SiCepat.";
-    else message = `Request failed (HTTP ${status}).`;
-
-    return res.status(status || 502).json({
-      ok: false,
-      status: status || 502,
-      message,
-    });
-  }
-});
-
-// Serve the built frontend when present (production-ish local usage).
 const distDir = path.join(__dirname, "..", "dist");
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
@@ -152,8 +83,46 @@ if (fs.existsSync(distDir)) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(
-    `[sicepat-proxy] SiCepat Bulk Phone Rechecker backend listening on http://localhost:${PORT}`,
-  );
+// ---------------------------------------------------------------------------
+// 404 + error handling
+// ---------------------------------------------------------------------------
+
+app.use("/api", (_req, res) => {
+  res.status(404).json({ ok: false, message: "Not found." });
 });
+
+app.use((err, _req, res, _next) => {
+  // Body-parser and validation errors land here.
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({ ok: false, message: "Request body too large." });
+  }
+  if (err.type === "entity.parse.failed" || err instanceof SyntaxError) {
+    return res.status(400).json({ ok: false, message: "Invalid JSON body." });
+  }
+  console.error("[server] unhandled error:", err.message);
+  return res.status(err.status || 500).json({ ok: false, message: "Server error." });
+});
+
+// ---------------------------------------------------------------------------
+
+async function start() {
+  // First-run convenience admin (only when users table is empty).
+  if (auth.loginEnabled()) {
+    await auth.bootstrapAdminIfEmpty();
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[oneops] backend listening on http://localhost:${PORT}`);
+    if (!auth.loginEnabled()) {
+      console.warn(
+        "[oneops] SESSION_SECRET is not set — login is DISABLED. Set it to enable authentication."
+      );
+    }
+    const { r2Configured } = require("./config");
+    if (!r2Configured()) {
+      console.warn("[oneops] R2 credentials incomplete — file storage APIs will return 503.");
+    }
+  });
+}
+
+start();

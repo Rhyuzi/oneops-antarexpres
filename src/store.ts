@@ -6,7 +6,6 @@ import { parseExcelFile, writeOutputWorkbook } from './lib/excel'
 import { processRecord } from './lib/queue'
 
 type View = 'dashboard' | 'settings'
-
 interface State {
   view: View
   settings: Settings
