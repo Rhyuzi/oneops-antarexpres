@@ -42,4 +42,11 @@
   .section-title {
     @apply text-base font-semibold text-slate-900;
   }
+  /* Exactly one viewport tall: 100vh fallback first, then 100dvh (mobile
+     browser toolbars) where supported. Tailwind's h-screen/h-dvh utilities
+     can't express this fallback because of their fixed output order. */
+  .h-viewport {
+    height: 100vh;
+    height: 100dvh;
+  }
 }

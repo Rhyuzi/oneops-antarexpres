@@ -107,16 +107,20 @@ const logoutAction = useAsyncAction(async (): Promise<void> => {
       @click="mobileOpen = false"
     />
 
-    <!-- Sidebar -->
+    <!-- Sidebar: always exactly one viewport tall (100vh fallback, 100dvh where
+         supported). Mobile = fixed drawer; desktop = sticky, so it stays in the
+         layout flow (width unchanged) but no longer grows with — and scrolls
+         away with — the page content. Inside: brand + account are shrink-0,
+         only the nav between them scrolls. -->
     <aside
-      class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform duration-200 lg:static lg:translate-x-0"
+      class="h-viewport fixed left-0 top-0 z-40 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform duration-200 lg:sticky lg:translate-x-0"
       :class="[
         mobileOpen ? 'translate-x-0' : '-translate-x-full',
         collapsed && isDesktop ? 'lg:w-[76px]' : 'lg:w-64',
       ]"
     >
       <!-- Brand -->
-      <div class="flex h-16 items-center gap-3 border-b border-slate-200 px-4">
+      <div class="flex h-16 shrink-0 items-center gap-3 border-b border-slate-200 px-4">
         <div class="shrink-0 rounded-xl bg-indigo-600 p-2 text-white">
           <Database :size="20" />
         </div>
@@ -133,7 +137,7 @@ const logoutAction = useAsyncAction(async (): Promise<void> => {
       </div>
 
       <!-- Navigation -->
-      <nav class="flex-1 space-y-6 overflow-y-auto px-3 py-4">
+      <nav class="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-3 py-4">
         <div v-for="group in navGroups" :key="group.label">
           <p
             v-if="!(collapsed && isDesktop)"
@@ -161,8 +165,8 @@ const logoutAction = useAsyncAction(async (): Promise<void> => {
         </div>
       </nav>
 
-      <!-- User + collapse -->
-      <div class="border-t border-slate-200 p-3">
+      <!-- User + collapse: anchored at the bottom, outside the nav scroll area -->
+      <div class="shrink-0 border-t border-slate-200 bg-white p-3">
         <div
           class="flex items-center gap-3 rounded-xl px-2 py-2"
           :class="{ 'justify-center': collapsed && isDesktop }"
