@@ -68,25 +68,28 @@ app.post("/api/auth/login", auth.handleLogin);
 app.post("/api/auth/logout", auth.handleLogout);
 app.get("/api/auth/me", auth.handleMe);
 
+// Public account lifecycle (no session): activation + password reset flows.
+// Registered BEFORE any app.use("/api", ...) gate so no auth middleware runs.
+app.post("/api/auth/activate-account", auth.handleActivateAccount);
+app.post("/api/auth/forgot-password", auth.handleForgotPassword);
+app.post("/api/auth/reset-password", auth.handleResetPassword);
+
 // ---------------------------------------------------------------------------
 // Feature APIs
 // ---------------------------------------------------------------------------
 
 // Data Warrior: module gate first, then per-route auth + folder permissions.
 app.use("/api/storage", auth.requireAuth, requirePermission("data_warrior.view"), storageRouter);
-// Number Rechecking proxy: session + module permission.
-app.use("/api", auth.requireAuth, requirePermission("number_rechecking.run"), recheckRouter);
 // Access Management: super_admin only (hard rule).
 app.use("/api/access-management", auth.requireAuth, requireSuperAdminStrict, accessManagementRouter);
 // Account Management: module-permission gated per route.
 app.use("/api/accounts", auth.requireAuth, accountsRouter);
 // SMTP administration: super_admin only.
 app.use("/api/admin/email", auth.requireAuth, requireSuperAdminStrict, emailAdminRouter);
-
-// Public account lifecycle (no session): activation + password reset flows.
-app.post("/api/auth/activate-account", auth.handleActivateAccount);
-app.post("/api/auth/forgot-password", auth.handleForgotPassword);
-app.post("/api/auth/reset-password", auth.handleResetPassword);
+// Number Rechecking proxy. Its auth + module gates live ON the /awb-detail
+// route inside the router — never put middleware on a bare "/api" mount,
+// or it runs for every /api/* request (that bug blocked password reset).
+app.use("/api", recheckRouter);
 
 // ---------------------------------------------------------------------------
 // Static frontend (production)

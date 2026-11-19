@@ -13,6 +13,7 @@
 const express = require("express");
 const axios = require("axios");
 const { requireAuth } = require("../auth");
+const { requirePermission } = require("../modulePermissions");
 
 const router = express.Router();
 
@@ -31,7 +32,7 @@ function headerString(value) {
   return typeof value === "string" ? value : "";
 }
 
-router.post("/awb-detail", requireAuth, async (req, res) => {
+router.post("/awb-detail", requireAuth, requirePermission("number_rechecking.run"), async (req, res) => {
   const body = req.body || {};
   const awbNumber = body.awb_number;
   const userId = body.user_id;
