@@ -7,6 +7,7 @@ export interface AuthUser {
   fullName: string
   email?: string | null
   roles: string[]
+  permissions: string[] | null
 }
 
 interface AuthState {
@@ -30,6 +31,12 @@ export const authStore = {
   },
   get isSuperAdmin(): boolean {
     return state.user?.roles.includes('super_admin') ?? false
+  },
+  /** Module permission check (frontend affordance only — backend enforces). */
+  can(permission: string): boolean {
+    if (!state.user) return false
+    if (state.user.roles.includes('super_admin')) return true
+    return state.user.permissions?.includes(permission) ?? false
   },
   get displayName(): string {
     return state.user?.fullName || state.user?.username || ''

@@ -81,6 +81,13 @@ async function submit(): Promise<void> {
           <button class="btn btn-primary w-full" type="submit" :disabled="submitting">
             {{ submitting ? 'Signing in…' : 'Sign in' }}
           </button>
+
+          <router-link
+            class="block text-center text-sm font-medium text-indigo-600 hover:text-indigo-800"
+            to="/forgot-password"
+          >
+            Forgot password?
+          </router-link>
         </div>
       </form>
 

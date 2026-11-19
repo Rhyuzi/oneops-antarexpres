@@ -102,7 +102,32 @@ const config = {
     maxFileSize: int(env.R2_MAX_FILE_SIZE, 52428800), // 50 MB
   },
 
-  // --- Upload validation ------------------------------------------------------
+  // --- SMTP (cPanel mailbox) --------------------------------------------------
+  smtp: {
+    host: env.SMTP_HOST || "",
+    port: int(env.SMTP_PORT, 465),
+    secure: bool(env.SMTP_SECURE, true),
+    user: env.SMTP_USER || "",
+    password: env.SMTP_PASSWORD || "",
+    fromName: env.SMTP_FROM_NAME || "OneOps",
+    fromEmail: env.SMTP_FROM_EMAIL || env.SMTP_USER || "",
+    baseUrl: env.APP_BASE_URL || "",
+    invitationExpiryMinutes: int(env.ACCOUNT_INVITATION_EXPIRY_MINUTES, 1440),
+    resetExpiryMinutes: int(env.PASSWORD_RESET_EXPIRY_MINUTES, 30),
+    // Automated tests swap the transport; never sends real mail.
+    mockTransport: bool(env.EMAIL_TRANSPORT, false) === true && env.EMAIL_TRANSPORT === "mock",
+  },
+
+  // --- Password policy ----------------------------------------------------------
+  passwords: {
+    minLength: int(env.PASSWORD_MIN_LENGTH, 8),
+    requireUpper: bool(env.PASSWORD_REQUIRE_UPPER, true),
+    requireLower: bool(env.PASSWORD_REQUIRE_LOWER, true),
+    requireDigit: bool(env.PASSWORD_REQUIRE_DIGIT, true),
+    requireSymbol: bool(env.PASSWORD_REQUIRE_SYMBOL, true),
+  },
+
+  // --- Upload validation -------------------------------------------------------
   upload: {
     // Allowed file extensions (lowercase, no dot). Office/PDF/image/text.
     allowedExtensions: [

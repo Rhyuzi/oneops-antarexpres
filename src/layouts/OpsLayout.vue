@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Database,
   ScanSearch,
+  ShieldCheck,
+  Users,
   LogOut,
   Menu,
   PanelLeftClose,
@@ -39,15 +41,46 @@ watch(
   }
 )
 
-const navGroups = [
-  {
-    label: 'DATA CENTER',
-    items: [
-      { name: 'data-warrior', label: 'Data Warrior', icon: Database },
-      { name: 'number-rechecking', label: 'Number Rechecking', icon: ScanSearch },
-    ],
-  },
-]
+interface NavItem {
+  name: string
+  label: string
+  icon: unknown
+  permission?: string
+  superAdminOnly?: boolean
+}
+
+const navGroups = computed(() => {
+  const groups: Array<{ label: string; items: NavItem[] }> = [
+    {
+      label: 'DATA CENTER',
+      items: [
+        { name: 'data-warrior', label: 'Data Warrior', icon: Database, permission: 'data_warrior.view' },
+        { name: 'number-rechecking', label: 'Number Rechecking', icon: ScanSearch, permission: 'number_rechecking.view' },
+      ],
+    },
+  ]
+
+  // ACCESS MANAGEMENT: Roles & Permissions is super-admin only; Account
+  // Management is visible to anyone with account_management.view.
+  const accessItems: NavItem[] = []
+  if (authStore.isSuperAdmin) {
+    accessItems.push({ name: 'access-management-roles', label: 'Roles & Permissions', icon: ShieldCheck, superAdminOnly: true })
+  }
+  if (authStore.can('account_management.view')) {
+    accessItems.push({ name: 'access-management-accounts', label: 'Account Management', icon: Users, permission: 'account_management.view' })
+  }
+  if (accessItems.length) {
+    groups.push({ label: 'ACCESS MANAGEMENT', items: accessItems })
+  }
+
+  return groups
+})
+
+function itemVisible(item: NavItem): boolean {
+  if (item.superAdminOnly) return authStore.isSuperAdmin
+  if (item.permission) return authStore.can(item.permission)
+  return true
+}
 
 function isActive(name: string): boolean {
   return route.name === name
@@ -103,7 +136,7 @@ async function logout(): Promise<void> {
             {{ group.label }}
           </p>
           <ul class="space-y-1">
-            <li v-for="item in group.items" :key="item.name">
+            <li v-for="item in group.items.filter(itemVisible)" :key="item.name">
               <router-link
                 :to="{ name: item.name }"
                 class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition"

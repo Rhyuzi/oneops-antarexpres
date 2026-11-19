@@ -19,8 +19,13 @@ const { config } = require("./config");
 const { checkDb } = require("./db");
 const r2 = require("./r2");
 const auth = require("./auth");
+const { requirePermission, requireSuperAdmin } = require("./modulePermissions");
+const requireSuperAdminStrict = requireSuperAdmin;
 const storageRouter = require("./routes/storage");
 const recheckRouter = require("./routes/recheck");
+const accessManagementRouter = require("./routes/accessManagement");
+const accountsRouter = require("./routes/accounts");
+const emailAdminRouter = require("./routes/emailAdmin");
 
 const app = express();
 const PORT = config.port;
@@ -67,8 +72,21 @@ app.get("/api/auth/me", auth.handleMe);
 // Feature APIs
 // ---------------------------------------------------------------------------
 
-app.use("/api/storage", auth.requireAuth, storageRouter);
-app.use("/api", recheckRouter);
+// Data Warrior: module gate first, then per-route auth + folder permissions.
+app.use("/api/storage", auth.requireAuth, requirePermission("data_warrior.view"), storageRouter);
+// Number Rechecking proxy: session + module permission.
+app.use("/api", auth.requireAuth, requirePermission("number_rechecking.run"), recheckRouter);
+// Access Management: super_admin only (hard rule).
+app.use("/api/access-management", auth.requireAuth, requireSuperAdminStrict, accessManagementRouter);
+// Account Management: module-permission gated per route.
+app.use("/api/accounts", auth.requireAuth, accountsRouter);
+// SMTP administration: super_admin only.
+app.use("/api/admin/email", auth.requireAuth, requireSuperAdminStrict, emailAdminRouter);
+
+// Public account lifecycle (no session): activation + password reset flows.
+app.post("/api/auth/activate-account", auth.handleActivateAccount);
+app.post("/api/auth/forgot-password", auth.handleForgotPassword);
+app.post("/api/auth/reset-password", auth.handleResetPassword);
 
 // ---------------------------------------------------------------------------
 // Static frontend (production)

@@ -246,6 +246,200 @@ test("all documented actions exist", () => {
   }
 });
 
+// --- module permission registry & computation ----------------------------------
+
+console.log("\n== module permissions ==");
+
+for (const mod of ["../server/config", "../server/r2", "../server/permissionRegistry"]) {
+  delete require.cache[require.resolve(mod)];
+}
+const registry = require("../server/permissionRegistry");
+const { computeEffectivePermissions } = registry;
+
+test("registry has permissions for every module", () => {
+  const modules = new Set(registry.PERMISSIONS.map((p) => p.module));
+  for (const m of ["data_warrior", "number_rechecking", "access_management"]) {
+    assert.ok(modules.has(m), m);
+  }
+});
+
+test("permission keys are unique and well-formed", () => {
+  const keys = registry.PERMISSIONS.map((p) => p.key);
+  assert.strictEqual(new Set(keys).size, keys.length);
+  for (const key of keys) assert.ok(/^[a-z0-9_]+\.[a-z0-9_]+$/.test(key), key);
+});
+
+test("super_admin gets every permission", () => {
+  const perms = computeEffectivePermissions(["super_admin"], new Map());
+  assert.strictEqual(perms.size, registry.PERMISSION_KEYS.length);
+});
+
+test("union of role grants", () => {
+  const grants = new Map([
+    ["finance", ["data_warrior.view", "data_warrior.download"]],
+    ["hr", ["number_rechecking.view"]],
+  ]);
+  const perms = computeEffectivePermissions(["finance", "hr"], grants);
+  assert.ok(perms.has("data_warrior.view"));
+  assert.ok(perms.has("data_warrior.download"));
+  assert.ok(perms.has("number_rechecking.view"));
+  assert.ok(!perms.has("data_warrior.upload"));
+});
+
+test("no roles → no permissions", () => {
+  const perms = computeEffectivePermissions([], new Map([["finance", ["data_warrior.view"]]]));
+  assert.strictEqual(perms.size, 0);
+});
+
+test("ungranted role contributes nothing", () => {
+  const perms = computeEffectivePermissions(["it"], new Map([["finance", ["data_warrior.view"]]]));
+  assert.strictEqual(perms.size, 0);
+});
+
+test("isValidKey rejects unknown keys", () => {
+  assert.ok(registry.isValidKey("data_warrior.view"));
+  assert.ok(!registry.isValidKey("data_warrior.fly"));
+  assert.ok(!registry.isValidKey("'; DROP TABLE roles;--"));
+});
+
+test("access_management keys exist and are distinct", () => {
+  for (const key of [
+    "access_management.view",
+    "access_management.manage_roles",
+    "access_management.manage_permissions",
+    "access_management.manage_users",
+  ]) {
+    assert.ok(registry.isValidKey(key), key);
+  }
+});
+
+// --- role lifecycle protection rules (pure logic mirror) ------------------------
+// The last-super-admin rule lives in routes/accessManagement.js against the DB;
+// this mirrors the query semantics to keep the rule observable in unit tests.
+
+console.log("\n== super admin protection ==");
+
+test("detecting the last super admin (logic mirror)", () => {
+  // users: [{id, roles, is_active}] — mirrors the SQL COUNT(DISTINCT ...) rule.
+  function isLastSuperAdmin(users, userId) {
+    const others = users.filter(
+      (u) =>
+        u.id !== userId &&
+        u.is_active &&
+        u.roles.includes("super_admin")
+    );
+    const self = users.find((u) => u.id === userId);
+    return Boolean(self && self.roles.includes("super_admin")) && others.length === 0;
+  }
+  const users = [
+    { id: 1, roles: ["super_admin"], is_active: true },
+    { id: 2, roles: ["finance"], is_active: true },
+  ];
+  assert.strictEqual(isLastSuperAdmin(users, 1), true, "user 1 is the only super admin");
+  assert.strictEqual(isLastSuperAdmin(users, 2), false, "non-super-admin user");
+  users.push({ id: 3, roles: ["super_admin"], is_active: true });
+  assert.strictEqual(isLastSuperAdmin(users, 1), false, "second super admin exists");
+  users[2].is_active = false;
+  assert.strictEqual(isLastSuperAdmin(users, 1), true, "other super admin deactivated");
+});
+
+test("role name validation regex matches backend rule", () => {
+  const ROLE_NAME_RE = /^[a-z][a-z0-9_]{1,48}$/;
+  assert.ok(ROLE_NAME_RE.test("warehouse_team"));
+  assert.ok(ROLE_NAME_RE.test("q1"));
+  assert.ok(!ROLE_NAME_RE.test("super_admin 2"));
+  assert.ok(!ROLE_NAME_RE.test("UPPER"));
+  assert.ok(!ROLE_NAME_RE.test("1starts_with_digit"));
+  assert.ok(!ROLE_NAME_RE.test("x"));
+  assert.ok(!ROLE_NAME_RE.test("' OR 1=1--"));
+});
+
+// --- account lifecycle: password policy + token hashing --------------------------
+
+console.log("\n== account lifecycle ==");
+
+for (const mod of ["../server/config", "../server/tokenService", "../server/emailService"]) {
+  delete require.cache[require.resolve(mod)];
+}
+process.env.EMAIL_TRANSPORT = "mock";
+const tokens = require("../server/tokenService");
+
+test("password policy enforces composition rules", () => {
+  assert.strictEqual(tokens.validatePasswordPolicy("short").valid, false);
+  assert.strictEqual(tokens.validatePasswordPolicy("alllowercase1!a").valid, false);
+  assert.strictEqual(tokens.validatePasswordPolicy("ALLUPPERCASE1!A").valid, false);
+  assert.strictEqual(tokens.validatePasswordPolicy("NoDigits!!!!").valid, false);
+  assert.strictEqual(tokens.validatePasswordPolicy("NoSymbols1234").valid, false);
+  assert.strictEqual(tokens.validatePasswordPolicy("GoodPass1!x").valid, true);
+});
+
+test("token hashing is deterministic and different from raw", () => {
+  const raw = "abc123rawtoken";
+  const h1 = tokens.hashToken(raw);
+  const h2 = tokens.hashToken(raw);
+  assert.strictEqual(h1, h2);
+  assert.strictEqual(h1.length, 64); // sha256 hex
+  assert.ok(!h1.includes(raw));
+});
+
+test("two different tokens hash differently", () => {
+  assert.notStrictEqual(tokens.hashToken("token-a"), tokens.hashToken("token-b"));
+});
+
+// --- email templates (mock transport; no network) ---------------------------------
+
+console.log("\n== email templates ==");
+
+const emailService = require("../server/emailService");
+
+test("invitation template renders name, link, expiry, no raw token elsewhere", () => {
+  const tpl = emailService._internal.invitationEmail({
+    fullName: "Budi <Test>",
+    activationUrl: "https://oneops.example/activate-account?token=XYZ",
+    expiryMinutes: 1440,
+  });
+  assert.ok(tpl.subject.includes("OneOps Account Invitation"));
+  assert.ok(tpl.html.includes("Budi &lt;Test&gt;")); // XSS-escaped
+  assert.ok(tpl.html.includes("https://oneops.example/activate-account?token=XYZ"));
+  assert.ok(tpl.html.includes("24 hours"));
+  assert.ok(tpl.text.includes("activate your account"));
+});
+
+test("password reset template renders with expiry", () => {
+  const tpl = emailService._internal.passwordResetEmail({
+    fullName: "Sari",
+    resetUrl: "https://oneops.example/reset-password?token=ABC",
+    expiryMinutes: 30,
+  });
+  assert.ok(tpl.subject.toLowerCase().includes("reset"));
+  assert.ok(tpl.html.includes("30 minutes"));
+  assert.ok(tpl.text.includes("ABC"));
+});
+
+test("email shell is responsive-width HTML", () => {
+  const html = emailService._internal.emailShell({ title: "T", bodyHtml: "<p>x</p>" });
+  assert.ok(html.includes("max-width:560px"));
+  assert.ok(html.includes("<!doctype html>"));
+});
+
+test("escapeHtml neutralizes injection", () => {
+  assert.strictEqual(
+    emailService._internal.escapeHtml(`<script>alert("x")</script>`),
+    "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"
+  );
+});
+
+test("friendly SMTP error mapping never leaks credentials", () => {
+  const msg = emailService.friendlySmtpError({ code: "EAUTH", message: "Invalid login auth failed" });
+  assert.ok(/authentication failed/i.test(msg));
+  // Construct a fake error that embeds a password-like string.
+  const leaky = emailService.friendlySmtpError({
+    code: "ECONNECTION",
+    message: "connect ECONNREFUSED 127.0.0.1:465 pass=SuperSecret123",
+  });
+  assert.ok(!leaky.includes("SuperSecret123"), "error text must not echo credential-like content");
+});
+
 // --- summary -------------------------------------------------------------------
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

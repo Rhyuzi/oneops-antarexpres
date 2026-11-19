@@ -1,12 +1,8 @@
 # OneOps — AntarXpress
 
-Operations platform with two modules under **DATA CENTER**:
-
-- **Data Warrior** (`/ops/data-warrior`) — centralized company document
-  repository. Files live in Cloudflare R2; folders, metadata, versioning,
-  role-based permissions and audit logs live in MySQL.
-- **Number Rechecking** (`/ops/number-rechecking`) — bulk SiCepat AWB phone
-  rechecker (preserved from v1, now behind login).
+- **OneOps** — AntarXpress operations platform: Data Warrior (document
+  management on Cloudflare R2), Number Rechecking, Roles & Permissions,
+  and Account Management with cPanel SMTP invitations.
 
 ## Stack
 
@@ -41,6 +37,10 @@ npm run hash-password 'pw'  # bcrypt hash for creating users via SQL
 | [docs/R2-SETUP.md](docs/R2-SETUP.md) | R2 credentials, CORS for browser uploads, troubleshooting |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | cPanel + Passenger deployment, step by step |
 | [docs/API.md](docs/API.md) | Backend API reference |
+| [docs/ACCESS-MANAGEMENT.md](docs/ACCESS-MANAGEMENT.md) | Roles & permissions guide, migration 007 import |
+| [docs/ACCESS-MANAGEMENT-REPORT.md](docs/ACCESS-MANAGEMENT-REPORT.md) | Access management implementation report |
+| [docs/ACCOUNT-MANAGEMENT.md](docs/ACCOUNT-MANAGEMENT.md) | Accounts, invitations, password reset, cPanel SMTP setup |
+| [docs/ACCOUNT-MANAGEMENT-REPORT.md](docs/ACCOUNT-MANAGEMENT-REPORT.md) | Account management implementation report |
 | [docs/IMPLEMENTATION-REPORT.md](docs/IMPLEMENTATION-REPORT.md) | What was built, what's tested, what needs manual setup |
 
 ## First run
