@@ -26,6 +26,8 @@ const recheckRouter = require("./routes/recheck");
 const accessManagementRouter = require("./routes/accessManagement");
 const accountsRouter = require("./routes/accounts");
 const emailAdminRouter = require("./routes/emailAdmin");
+const auditTrailRouter = require("./routes/auditTrail");
+const { auditHealth } = require("./audit");
 
 const app = express();
 const PORT = config.port;
@@ -52,6 +54,8 @@ app.get("/api/health", async (_req, res) => {
     database: db,
     storage: { configured: r2Configured() },
     loginEnabled: auth.loginEnabled(),
+    // Audit write failures since process start (details in the server log).
+    audit: auditHealth(),
   });
 });
 
@@ -86,6 +90,8 @@ app.use("/api/access-management", auth.requireAuth, requireSuperAdminStrict, acc
 app.use("/api/accounts", auth.requireAuth, accountsRouter);
 // SMTP administration: super_admin only.
 app.use("/api/admin/email", auth.requireAuth, requireSuperAdminStrict, emailAdminRouter);
+// Audit Trail: read-only; audit_trail.view (super_admin via canonical bypass).
+app.use("/api/audit-trail", auth.requireAuth, requirePermission("audit_trail.view"), auditTrailRouter);
 // Number Rechecking proxy. Its auth + module gates live ON the /awb-detail
 // route inside the router — never put middleware on a bare "/api" mount,
 // or it runs for every /api/* request (that bug blocked password reset).

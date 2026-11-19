@@ -43,10 +43,12 @@ router.get("/status", (_req, res) => {
 router.post("/verify", async (req, res) => {
   const result = await emailService.verify();
   logAudit({
+    req,
     userId: req.user.id,
     action: "smtp.verify",
     entityType: "email",
     entityId: null,
+    result: result.ok ? "success" : "failure",
     metadata: { ok: result.ok, code: result.code || null },
     ip: clientIp(req),
   }).catch(() => {});
@@ -62,6 +64,7 @@ router.post("/test", async (req, res) => {
   try {
     await emailService.sendTestEmail(to);
     logAudit({
+      req,
       userId: req.user.id,
       action: "smtp.test_email",
       entityType: "email",
@@ -72,10 +75,12 @@ router.post("/test", async (req, res) => {
     return res.json({ ok: true, message: `Test email sent to ${to}.` });
   } catch (err) {
     logAudit({
+      req,
       userId: req.user.id,
       action: "smtp.test_email",
       entityType: "email",
       entityId: null,
+      result: "failure",
       metadata: { recipient: to, result: "failed", code: err.code || null },
       ip: clientIp(req),
     }).catch(() => {});

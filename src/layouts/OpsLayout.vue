@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Database,
   ScanSearch,
+  ScrollText,
   ShieldCheck,
   Users,
   LogOut,
@@ -70,6 +71,9 @@ const navGroups = computed(() => {
   }
   if (authStore.can('account_management.view')) {
     accessItems.push({ name: 'access-management-accounts', label: 'Account Management', icon: Users, permission: 'account_management.view' })
+  }
+  if (authStore.can('audit_trail.view')) {
+    accessItems.push({ name: 'audit-trail', label: 'Audit Trail', icon: ScrollText, permission: 'audit_trail.view' })
   }
   if (accessItems.length) {
     groups.push({ label: 'ACCESS MANAGEMENT', items: accessItems })

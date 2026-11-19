@@ -70,11 +70,65 @@ PUT body: `{permissions: [{role_id, can_view, can_upload, …}]}` — replaces
 the folder's explicit rows; roles with no checked capability get their row
 removed (they fall back to parent inheritance).
 
-## Storage — Audit
+## Storage — Audit (legacy)
 
 | Method | Path | Auth |
 |---|---|---|
 | GET | `/api/storage/audit-logs` | super_admin only; query: `page`, `pageSize`, `search`, `action`, `entityType`, `userId` |
+
+Kept for compatibility (raw rows). New clients use the Audit Trail API below.
+
+## Audit Trail (read-only)
+
+| Method | Path | Auth |
+|---|---|---|
+| GET | `/api/audit-trail` | `audit_trail.view` (super_admin bypass) |
+| GET | `/api/audit-trail/filters` | `audit_trail.view` |
+| GET | `/api/audit-trail/:id` | `audit_trail.view` |
+| POST / PUT / PATCH / DELETE | `/api/audit-trail[/:id]` | always **405** — records are immutable |
+
+No session → 401; session without the permission → 403.
+
+`GET /api/audit-trail` query (all optional, combined with AND; invalid → 400):
+
+| Param | Meaning |
+|---|---|
+| `page`, `pageSize` | server-side pagination, `pageSize` ≤ 100 (default 25), newest first |
+| `userId` | actor user id |
+| `module` | `authentication`, `account_management`, `access_management`, `data_warrior`, `number_rechecking`, `system` |
+| `action` | exact action, e.g. `account.created` |
+| `result` | `success` or `failure` |
+| `from`, `to` | epoch seconds, `from` inclusive / `to` exclusive (the UI sends local-day boundaries) |
+| `search` | ≤ 100 chars; username, full name, action, resource type, description/details text; a number also matches resource id or record id |
+
+Response: `{ ok, records: [...], total, page, pageSize }`. Record:
+
+```json
+{
+  "id": 280, "created_at": "2026-11-19T11:26:58.000Z",
+  "action": "account.profile_updated", "module": "account_management",
+  "module_label": "Account Management", "result": "success",
+  "description": "Updated profile of @alice",
+  "entity_type": "user", "entity_id": 30, "resource_id": "30",
+  "actor": { "id": 1, "username": "superadmin", "full_name": "Super Admin",
+             "roles": ["super_admin"], "roles_are_current": false,
+             "anonymous": false, "deleted": false },
+  "ip_address": "203.0.113.7"
+}
+```
+
+`GET /api/audit-trail/:id` returns `{ ok, record }` with additionally
+`user_agent`, `before`, `after`, `details` and `format` (1 = legacy row
+written before the audit envelope existed, 2 = current). `roles_are_current:
+true` means the role was not recorded at the time (legacy row) and the
+user's current roles are shown instead.
+
+`GET /api/audit-trail/filters` → `{ ok, modules: [{key,label}], actions:
+[{action, module, count}], users: [{id, username, full_name}] }`.
+
+Sensitive keys (password, hash, token, secret, cookie, session, authorization,
+api key, credential …) are redacted recursively before storage and again on
+read.
 
 ## Number Rechecking
 

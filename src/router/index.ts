@@ -69,6 +69,12 @@ const routes = [
         component: () => import('../views/AccountManagementView.vue'),
         meta: { title: 'Account Management', permission: 'account_management.view' },
       },
+      {
+        path: 'audit-trail',
+        name: 'audit-trail',
+        component: () => import('../views/AuditTrailView.vue'),
+        meta: { title: 'Audit Trail', permission: 'audit_trail.view' },
+      },
     ],
   },
   {
@@ -138,6 +144,7 @@ router.beforeEach(async (to) => {
       if (auth.can('data_warrior.view')) return { name: 'data-warrior' }
       if (auth.can('number_rechecking.view')) return { name: 'number-rechecking' }
       if (auth.can('account_management.view')) return { name: 'access-management-accounts' }
+      if (auth.can('audit_trail.view')) return { name: 'audit-trail' }
     }
     return { name: 'no-access' }
   }

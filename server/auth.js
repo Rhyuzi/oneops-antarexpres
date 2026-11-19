@@ -300,9 +300,25 @@ async function handleLogin(req, res) {
   }
 
   const user = rows[0];
+  const { logAudit } = require("./audit");
+  // Failed sign-in audit: identifier as typed (never the password), reason
+  // for investigators only — the HTTP response stays uniform.
+  const auditFailure = (reason) =>
+    logAudit({
+      req,
+      userId: user ? user.id : null,
+      action: "user.login_failed",
+      entityType: "user",
+      entityId: user ? user.id : null,
+      result: "failure",
+      metadata: { identifier: String(username).trim().slice(0, 64), reason },
+    });
+
   // Uniform error for unknown user / bad password / inactive — no enumeration.
-  const fail = () =>
-    res.status(401).json({ ok: false, message: "Invalid username or password." });
+  const fail = (reason) => {
+    void auditFailure(reason);
+    return res.status(401).json({ ok: false, message: "Invalid username or password." });
+  };
 
   const status = user ? user.status || "active" : null;
 
@@ -313,6 +329,7 @@ async function handleLogin(req, res) {
       String(password),
       user.password_hash || "$2a$10$C6UzMDM.H6dfI/f/IKcEeO7ZBpUvHzGE9zSnzWn0mUeEW7dGkFlIm"
     );
+    void auditFailure("pending_activation");
     return res.status(403).json({
       ok: false,
       message:
@@ -323,11 +340,11 @@ async function handleLogin(req, res) {
   if (!user || !user.is_active) {
     // Burn comparable time so timing cannot reveal user existence.
     await bcrypt.compare(password, "$2a$10$C6UzMDM.H6dfI/f/IKcEeO7ZBpUvHzGE9zSnzWn0mUeEW7dGkFlIm");
-    return fail();
+    return fail(user ? "account_inactive" : "unknown_user");
   }
 
   const good = await bcrypt.compare(String(password), user.password_hash);
-  if (!good) return fail();
+  if (!good) return fail("bad_password");
 
   const token = signSession(
     { uid: user.id, un: user.username },
@@ -353,16 +370,16 @@ async function handleLogin(req, res) {
     await query("UPDATE users SET last_login_at = NOW() WHERE id = ?", [user.id]);
   } catch (_) {}
 
-  const { logAudit, ACTIONS } = require("./audit");
-  void ACTIONS;
-  logAudit({
+  // Session issued: record the sign-in with the roles held at this moment.
+  void logAudit({
+    req,
     userId: user.id,
+    actor: { username: user.username, full_name: user.full_name, roles: full ? full.roles : [] },
     action: "user.login",
     entityType: "user",
     entityId: user.id,
     metadata: { username: user.username },
-    ip: null,
-  }).catch(() => {});
+  });
 
   res.setHeader("Set-Cookie", sessionCookie(token));
   return res.json({
@@ -383,11 +400,21 @@ async function handleLogout(req, res) {
   // every session issued before this second (this browser, other tabs, other
   // devices) is rejected by attachUser from here on.
   if (req.user && req.user.id) {
+    let revoked = true;
     try {
       await query(`UPDATE users SET ${REVOKE_SESSIONS_SET} WHERE id = ?`, [req.user.id]);
     } catch (err) {
+      revoked = false;
       console.warn("[auth] logout revocation failed:", err.dbMessage || err.message);
     }
+    const { logAudit } = require("./audit");
+    await logAudit({
+      req,
+      action: "user.logout",
+      entityType: "user",
+      entityId: req.user.id,
+      metadata: { username: req.user.username, sessions_revoked: revoked },
+    });
   }
   res.setHeader("Set-Cookie", clearCookie());
   return res.json({ ok: true });
@@ -454,6 +481,13 @@ async function handleActivateAccount(req, res) {
     return res.status(503).json({ ok: false, message: "Service unavailable." });
   }
   if (!claim.ok) {
+    await require("./audit").logAudit({
+      req,
+      action: "auth.activation_failed",
+      entityType: "user",
+      result: "failure",
+      metadata: { reason: "invalid_or_expired_link" },
+    });
     return res.status(400).json({
       ok: false,
       message:
@@ -473,6 +507,15 @@ async function handleActivateAccount(req, res) {
     );
     if (Number(result.affectedRows) !== 1) {
       // Account was already active — the token still burns (single-use).
+      await require("./audit").logAudit({
+        req,
+        userId: claim.userId,
+        action: "auth.activation_failed",
+        entityType: "user",
+        entityId: claim.userId,
+        result: "failure",
+        metadata: { reason: "already_active" },
+      });
       return res.status(400).json({
         ok: false,
         message: "This account is already activated. Please sign in normally.",
@@ -485,10 +528,13 @@ async function handleActivateAccount(req, res) {
 
   const { logAudit } = require("./audit");
   logAudit({
+    req,
     userId: claim.userId,
     action: "account.activated",
     entityType: "user",
     entityId: claim.userId,
+    before: { status: "pending_activation" },
+    after: { status: "active", password: "(set by user)" },
     metadata: { via: "invitation_link" },
     ip: clientIpFrom(req),
   }).catch(() => {});
@@ -522,8 +568,20 @@ async function handleForgotPassword(req, res) {
     return res.status(503).json({ ok: false, message: "Service unavailable." });
   }
 
-  // Always the generic response — no enumeration.
-  if (!user || user.status !== "active") return res.json(generic);
+  // Always the generic response — no enumeration. The audit keeps the attempt
+  // (reason only; the typed address is not stored for unknown accounts).
+  if (!user || user.status !== "active") {
+    await require("./audit").logAudit({
+      req,
+      userId: user ? user.id : null,
+      action: "auth.password_reset_requested",
+      entityType: "user",
+      entityId: user ? user.id : null,
+      result: "failure",
+      metadata: { reason: user ? `account_${user.status}` : "no_matching_account" },
+    });
+    return res.json(generic);
+  }
 
   // Deliverability: if SMTP is down we still return generic (the retry path
   // exists); failures are audited, success is audited without tokens.
@@ -537,8 +595,9 @@ async function handleForgotPassword(req, res) {
     await emailService.sendPasswordReset({ fullName: user.full_name, to: user.email, token });
     const { logAudit } = require("./audit");
     logAudit({
+      req,
       userId: user.id,
-      action: "account.password_reset_requested",
+      action: "auth.password_reset_requested",
       entityType: "user",
       entityId: user.id,
       metadata: { delivery: "sent" },
@@ -549,10 +608,12 @@ async function handleForgotPassword(req, res) {
     emailService.smtpError("Password reset email failed (user notified generically)", err);
     const { logAudit } = require("./audit");
     logAudit({
+      req,
       userId: user.id,
-      action: "account.password_reset_requested",
+      action: "auth.password_reset_requested",
       entityType: "user",
       entityId: user.id,
+      result: "failure",
       metadata: { delivery: "failed", code: err.code || null },
       ip,
     }).catch(() => {});
@@ -580,6 +641,13 @@ async function handleResetPassword(req, res) {
     return res.status(503).json({ ok: false, message: "Service unavailable." });
   }
   if (!claim.ok) {
+    await require("./audit").logAudit({
+      req,
+      action: "auth.password_reset_failed",
+      entityType: "user",
+      result: "failure",
+      metadata: { reason: "invalid_or_expired_link" },
+    });
     return res.status(400).json({
       ok: false,
       message: "This reset link is invalid, expired, or already used. Request a new one.",
@@ -604,10 +672,12 @@ async function handleResetPassword(req, res) {
 
   const { logAudit } = require("./audit");
   logAudit({
+    req,
     userId: claim.userId,
     action: "account.password_changed",
     entityType: "user",
     entityId: claim.userId,
+    after: { password: "(changed)", other_sessions: "revoked" },
     metadata: { via: "reset_link" },
     ip: clientIpFrom(req),
   }).catch(() => {});

@@ -255,15 +255,21 @@ router.post("/", requirePermission("account_management.create"), async (req, res
     }
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.created",
       entityType: "user",
       entityId: userId,
-      metadata: {
+      after: {
         username: cleanUsername,
+        full_name: cleanName,
         email: cleanEmail,
         roles: uniqueRoles,
         status: initialStatus,
+      },
+      metadata: {
+        username: cleanUsername,
+        roles: uniqueRoles,
         invitation_sent: invitationSent,
       },
       ip: clientIp(req),
@@ -342,11 +348,14 @@ router.put("/:id", requirePermission("account_management.edit"), async (req, res
     await query(`UPDATE users SET ${setSql} WHERE id = ?`, [...Object.values(updates), id]);
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.profile_updated",
       entityType: "user",
       entityId: id,
-      metadata: meta,
+      before: meta.before,
+      after: meta.after,
+      metadata: { username: existing.username },
       ip: clientIp(req),
     });
 
@@ -411,10 +420,13 @@ router.patch("/:id/status", requirePermission("account_management.deactivate"), 
     );
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.status_changed",
       entityType: "user",
       entityId: id,
+      before: { status: existing.status },
+      after: { status },
       metadata: { username: existing.username, from: existing.status, to: status },
       ip: clientIp(req),
     });
@@ -503,11 +515,14 @@ router.patch("/:id/roles", requirePermission("account_management.assign_roles"),
     invalidateRolesCache();
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.roles_changed",
       entityType: "user",
       entityId: id,
-      metadata: { username: existing.username, before, after },
+      before: { roles: before },
+      after: { roles: after },
+      metadata: { username: existing.username },
       ip: clientIp(req),
     });
 
@@ -542,6 +557,7 @@ router.post("/:id/resend-invitation", requirePermission("account_management.send
     await emailService.sendInvitation({ fullName: existing.full_name, to: existing.email, token });
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.invitation_resent",
       entityType: "user",
@@ -553,10 +569,12 @@ router.post("/:id/resend-invitation", requirePermission("account_management.send
     return res.json({ ok: true, message: `Invitation sent to ${existing.email}.` });
   } catch (err) {
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.invitation_failed",
       entityType: "user",
       entityId: Number(req.params.id),
+      result: "failure",
       metadata: { reason: err.code || "send_failed" },
       ip: clientIp(req),
     }).catch(() => {});
@@ -575,6 +593,7 @@ router.post("/:id/revoke-invitation", requirePermission("account_management.send
 
     const revoked = await revokeTokens(id, TOKEN_TYPES.INVITATION);
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.invitation_revoked",
       entityType: "user",
@@ -616,6 +635,7 @@ router.post("/:id/reset-password", requirePermission("account_management.reset_p
     await emailService.sendPasswordReset({ fullName: existing.full_name, to: existing.email, token });
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.password_reset_requested",
       entityType: "user",
@@ -630,10 +650,12 @@ router.post("/:id/reset-password", requirePermission("account_management.reset_p
       return res.status(503).json({ ok: false, message: err.message });
     }
     await logAudit({
+      req,
       userId: req.user.id,
-      action: "account.invitation_failed",
+      action: "account.password_reset_failed",
       entityType: "user",
       entityId: Number(req.params.id),
+      result: "failure",
       metadata: { reason: err.code || "send_failed" },
       ip: clientIp(req),
     }).catch(() => {});
@@ -683,11 +705,19 @@ router.delete("/:id", requirePermission("account_management.delete"), async (req
     await query("DELETE FROM users WHERE id = ?", [id]);
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "account.deleted",
       entityType: "user",
       entityId: id,
-      metadata: { username: existing.username, email: existing.email },
+      before: {
+        username: existing.username,
+        full_name: existing.full_name,
+        email: existing.email,
+        status: existing.status,
+        roles: targetRoles,
+      },
+      metadata: { username: existing.username },
       ip: clientIp(req),
     });
 

@@ -189,10 +189,16 @@ router.post("/folders", async (req, res) => {
     )[0];
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: ACTIONS.FOLDER_CREATE,
       entityType: "folder",
       entityId: result.insertId,
+      after: {
+        name: name.trim(),
+        description: created ? created.description : null,
+        parent_id: isRoot(parentId) ? null : Number(parentId),
+      },
       metadata: { name: name.trim(), parent_id: isRoot(parentId) ? null : Number(parentId) },
       ip: clientIp(req),
     });
@@ -307,14 +313,30 @@ router.put("/folders/:id", async (req, res) => {
 
     if (renamed) {
       await logAudit({
+        req,
         userId: req.user.id, action: ACTIONS.FOLDER_RENAME, entityType: "folder",
-        entityId: id, metadata: { from: existing.name, to: name.trim() }, ip: clientIp(req),
+        entityId: id, before: { name: existing.name }, after: { name: name.trim() },
+        metadata: { from: existing.name, to: name.trim() }, ip: clientIp(req),
       });
     }
     if (moved) {
       await logAudit({
+        req,
         userId: req.user.id, action: ACTIONS.FOLDER_MOVE, entityType: "folder",
-        entityId: id, metadata: { from: existing.parent_id, to: isRoot(parentId) ? null : Number(parentId) }, ip: clientIp(req),
+        entityId: id,
+        before: { parent_id: existing.parent_id ? Number(existing.parent_id) : null },
+        after: { parent_id: isRoot(parentId) ? null : Number(parentId) },
+        metadata: { name: renamed ? name.trim() : existing.name }, ip: clientIp(req),
+      });
+    }
+    // Description edits are metadata changes too (previously unaudited).
+    if ((newDesc || null) !== (existing.description || null)) {
+      await logAudit({
+        req,
+        action: ACTIONS.FOLDER_UPDATE, entityType: "folder", entityId: id,
+        before: { description: existing.description || null },
+        after: { description: newDesc || null },
+        metadata: { name: renamed ? name.trim() : existing.name },
       });
     }
 
@@ -366,8 +388,14 @@ router.delete("/folders/:id", async (req, res) => {
     );
 
     await logAudit({
+      req,
       userId: req.user.id, action: ACTIONS.FOLDER_DELETE, entityType: "folder",
       entityId: id,
+      before: {
+        name: existing.name,
+        description: existing.description || null,
+        parent_id: existing.parent_id ? Number(existing.parent_id) : null,
+      },
       metadata: { name: existing.name, folders_deleted: descendants.length },
       ip: clientIp(req),
     });
@@ -483,10 +511,29 @@ router.put("/folders/:id/permissions", async (req, res) => {
       );
     }
 
-    await logAudit({
-      userId: req.user.id, action: ACTIONS.PERMISSION_UPDATE, entityType: "folder",
-      entityId: id, metadata: { rows: rowsToWrite.length }, ip: clientIp(req),
-    });
+    // Audit: per-role capability lists before/after (only roles that changed).
+    const rolesById = await getRolesById();
+    const permBefore = {};
+    const permAfter = {};
+    for (const { roleId, caps } of rowsToWrite) {
+      const prev = existingByRole.get(roleId);
+      const prevCaps = prev ? ALL_CAPS.filter((c) => Number(prev[c]) === 1) : [];
+      const nextCaps = ALL_CAPS.filter((c) => caps[c]);
+      if (prevCaps.join() === nextCaps.join()) continue;
+      const label = rolesById[roleId] || `role#${roleId}`;
+      permBefore[label] = prev ? prevCaps : "inherited";
+      permAfter[label] = nextCaps.length ? nextCaps : "inherited";
+    }
+    if (Object.keys(permAfter).length) {
+      const folderRow = (await query("SELECT name FROM storage_folders WHERE id = ?", [id]))[0];
+      await logAudit({
+        req,
+        userId: req.user.id, action: ACTIONS.PERMISSION_UPDATE, entityType: "folder",
+        entityId: id, before: permBefore, after: permAfter,
+        metadata: { folder: folderRow ? folderRow.name : null, roles_changed: Object.keys(permAfter).length },
+        ip: clientIp(req),
+      });
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -776,9 +823,11 @@ router.post("/files/complete-upload", async (req, res) => {
     );
 
     await logAudit({
+      req,
       userId: req.user.id, action: ACTIONS.FILE_UPLOAD, entityType: "file",
       entityId: result.insertId,
-      metadata: { file_name: finalName, folder_id: fid, size: Number(info.contentLength), object_key: payload.k },
+      after: { file_name: finalName, folder_id: fid, size: Number(info.contentLength), mime_type: payload.m },
+      metadata: { file_name: finalName, folder_id: fid, size: Number(info.contentLength) },
       ip: clientIp(req),
     });
 
@@ -843,6 +892,7 @@ router.get("/files/:id/download-url", async (req, res) => {
     }
 
     await logAudit({
+      req,
       userId: req.user.id, action: ACTIONS.FILE_DOWNLOAD, entityType: "file",
       entityId: id, metadata: { file_name: file.file_name }, ip: clientIp(req),
     });
@@ -878,6 +928,7 @@ router.get("/files/:id/preview-url", async (req, res) => {
     }
 
     await logAudit({
+      req,
       userId: req.user.id, action: ACTIONS.FILE_PREVIEW, entityType: "file",
       entityId: id, metadata: { file_name: file.file_name }, ip: clientIp(req),
     });
@@ -919,8 +970,10 @@ router.put("/files/:id", async (req, res) => {
       }
       await query("UPDATE storage_files SET file_name = ? WHERE id = ?", [clean, id]);
       await logAudit({
+        req,
         userId: req.user.id, action: ACTIONS.FILE_RENAME, entityType: "file",
-        entityId: id, metadata: { from: existing.file_name, to: clean }, ip: clientIp(req),
+        entityId: id, before: { file_name: existing.file_name }, after: { file_name: clean },
+        metadata: { from: existing.file_name, to: clean }, ip: clientIp(req),
       });
     }
 
@@ -944,8 +997,11 @@ router.put("/files/:id", async (req, res) => {
       }
       await query("UPDATE storage_files SET folder_id = ? WHERE id = ?", [target, id]);
       await logAudit({
+        req,
         userId: req.user.id, action: ACTIONS.FILE_MOVE, entityType: "file",
-        entityId: id, metadata: { from: existing.folder_id, to: target }, ip: clientIp(req),
+        entityId: id,
+        before: { folder_id: Number(existing.folder_id) }, after: { folder_id: target },
+        metadata: { file_name: existing.file_name }, ip: clientIp(req),
       });
     }
 
@@ -985,8 +1041,11 @@ router.delete("/files/:id", async (req, res) => {
     }
 
     await logAudit({
+      req,
       userId: req.user.id, action: ACTIONS.FILE_DELETE, entityType: "file",
-      entityId: id, metadata: { file_name: existing.file_name, r2_deleted: r2Deleted }, ip: clientIp(req),
+      entityId: id,
+      before: { file_name: existing.file_name, folder_id: Number(existing.folder_id), versions: versions.length },
+      metadata: { file_name: existing.file_name, r2_deleted: r2Deleted }, ip: clientIp(req),
     });
 
     return res.json({ ok: true });

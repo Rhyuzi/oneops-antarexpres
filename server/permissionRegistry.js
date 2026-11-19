@@ -196,6 +196,15 @@ const PERMISSIONS = [
     action: "delete",
     description: "Delete user accounts (blocked for last super admin)",
   },
+
+  // --- Audit Trail (read-only by design: no create/edit/delete keys) ----------
+  {
+    key: "audit_trail.view",
+    module: "audit_trail",
+    feature: "Access module",
+    action: "view",
+    description: "View the audit trail and audit record details (read-only)",
+  },
 ];
 
 const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
@@ -205,6 +214,7 @@ const MODULE_LABELS = {
   number_rechecking: "Number Rechecking",
   access_management: "Access Management",
   account_management: "Account Management",
+  audit_trail: "Audit Trail",
 };
 
 function isValidKey(key) {

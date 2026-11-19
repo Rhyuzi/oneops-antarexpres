@@ -95,11 +95,13 @@ router.post("/roles", async (req, res) => {
     );
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "role.create",
       entityType: "role",
       entityId: result.insertId,
-      metadata: { name: cleanName, description },
+      after: { name: cleanName, description: description ? String(description).slice(0, 200) : null, is_active: true },
+      metadata: { name: cleanName },
       ip: clientIp(req),
     });
 
@@ -165,11 +167,14 @@ router.put("/roles/:id", async (req, res) => {
     invalidateRolesCache();
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "role.update",
       entityType: "role",
       entityId: id,
-      metadata: auditMeta,
+      before: auditMeta.before,
+      after: auditMeta.after,
+      metadata: { role: existing.name },
       ip: clientIp(req),
     });
 
@@ -208,10 +213,12 @@ router.delete("/roles/:id", async (req, res) => {
     invalidateRolesCache();
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "role.delete",
       entityType: "role",
       entityId: id,
+      before: { name: existing.name, description: existing.description, is_active: Boolean(existing.is_active) },
       metadata: { name: existing.name },
       ip: clientIp(req),
     });
@@ -307,10 +314,13 @@ router.put("/roles/:id/permissions", async (req, res) => {
     }
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "role.permissions.update",
       entityType: "role",
       entityId: id,
+      before: { permissions: [...before].sort() },
+      after: { permissions: [...incoming].sort() },
       metadata: {
         role: role.name,
         granted: incoming.filter((k) => !before.includes(k)),
@@ -456,15 +466,14 @@ router.put("/users/:id/roles", async (req, res) => {
     }
 
     await logAudit({
+      req,
       userId: req.user.id,
       action: "user.roles.update",
       entityType: "user",
       entityId: userId,
-      metadata: {
-        username: user.username,
-        before,
-        after,
-      },
+      before: { roles: before },
+      after: { roles: after },
+      metadata: { username: user.username },
       ip: clientIp(req),
     });
 
@@ -512,10 +521,13 @@ router.put("/users/:id/active", async (req, res) => {
 
     await query("UPDATE users SET is_active = ? WHERE id = ?", [active ? 1 : 0, userId]);
     await logAudit({
+      req,
       userId: req.user.id,
       action: active ? "user.activate" : "user.deactivate",
       entityType: "user",
       entityId: userId,
+      before: { is_active: Boolean(user.is_active) },
+      after: { is_active: active },
       metadata: { username: user.username },
       ip: clientIp(req),
     });

@@ -11,7 +11,7 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test": "node tests/test-core.js",
+    "test": "node tests/test-core.js && node tests/test-audit.js",
     "r2:check": "node server/scripts/r2-check.js",
     "hash-password": "node server/scripts/hash-password.js"
   },

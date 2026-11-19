@@ -14,8 +14,31 @@ const express = require("express");
 const axios = require("axios");
 const { requireAuth } = require("../auth");
 const { requirePermission } = require("../modulePermissions");
+const { logAudit } = require("../audit");
 
 const router = express.Router();
+
+// Audit policy for this proxy: individual AWB lookups are NOT audited (a batch
+// is thousands of calls, and storing AWB→phone pairs in the audit table would
+// itself leak personal data). What IS audited is SiCepat rejecting the
+// configured credentials (security-relevant), at most once per user per
+// window so a failing batch does not flood the trail.
+const CREDENTIAL_AUDIT_WINDOW_MS = 10 * 60 * 1000;
+const lastCredentialAudit = new Map();
+
+function auditCredentialRejection(req, upstreamStatus) {
+  const key = req.user ? req.user.id : "anon";
+  const now = Date.now();
+  if (now - (lastCredentialAudit.get(key) || 0) < CREDENTIAL_AUDIT_WINDOW_MS) return;
+  lastCredentialAudit.set(key, now);
+  void logAudit({
+    req,
+    action: "recheck.credentials_rejected",
+    entityType: "sicepat_api",
+    result: "failure",
+    metadata: { upstream_status: upstreamStatus },
+  });
+}
 
 const SICEPAT_BASE_URL =
   (process.env.SICEPAT_BASE_URL || "https://podapi.sicepat.com/")
@@ -85,6 +108,8 @@ router.post("/awb-detail", requireAuth, requirePermission("number_rechecking.run
 
     console.error("[recheck] Upstream status:", status);
     console.error("[recheck] Upstream response:", JSON.stringify(upstreamData, null, 2));
+
+    if (status === 401 || status === 403) auditCredentialRejection(req, status);
 
     let message;
     if (status === 401) message = "Authorization failed — token is invalid or expired.";
