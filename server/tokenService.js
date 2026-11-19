@@ -29,10 +29,6 @@ function hashToken(rawToken) {
   return crypto.createHash("sha256").update(String(rawToken)).digest("hex");
 }
 
-function mysqlDatetime(date) {
-  return date.toISOString().slice(0, 19).replace("T", " ");
-}
-
 /**
  * Issues a token of the given type for the user.
  * Returns { token (raw, once), expiresAt }.
@@ -50,10 +46,14 @@ async function issueToken({ userId, type, expiryMinutes, createdBy = null }) {
     [userId, type]
   );
 
+  // expires_at is computed by the database clock so it is directly comparable
+  // with the `expires_at > NOW()` checks below. A JS/UTC timestamp would be
+  // off by the DB server's UTC offset (e.g. +7h on WIB hosts → 30-minute reset
+  // links were already expired on arrival).
   await query(
     `INSERT INTO user_auth_tokens (user_id, token_hash, token_type, expires_at, created_by)
-     VALUES (?, ?, ?, ?, ?)`,
-    [userId, hash, type, mysqlDatetime(expiresAt), createdBy]
+     VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), ?)`,
+    [userId, hash, type, Math.max(1, Math.floor(Number(expiryMinutes) || 0)), createdBy]
   );
 
   return { token: raw, expiresAt };

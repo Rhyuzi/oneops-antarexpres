@@ -1,3 +1,4 @@
+import axios from 'axios'
 import { createRouter, createWebHistory } from 'vue-router'
 import { authStore } from '../stores/auth'
 
@@ -85,6 +86,24 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+// Session expired / revoked while the app is open (TTL reached, password
+// changed, logged out in another tab): the backend answers 401 → drop the
+// stale client state and send the user to login, returning here afterwards.
+// Auth endpoints are excluded — their 401s are handled by the views.
+axios.interceptors.response.use(undefined, (error: unknown) => {
+  if (axios.isAxiosError(error) && error.response?.status === 401) {
+    const url = error.config?.url ?? ''
+    if (!url.startsWith('/api/auth/') && authStore.state.user) {
+      authStore.clearSession()
+      const current = router.currentRoute.value
+      if (!current.meta.public) {
+        void router.replace({ name: 'login', query: { redirect: current.fullPath } })
+      }
+    }
+  }
+  return Promise.reject(error)
 })
 
 router.beforeEach(async (to) => {

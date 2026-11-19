@@ -38,15 +38,36 @@ function sessionSecret() {
   return config.session.secret;
 }
 
-/** Returns a signed session token, or null when no valid secret is set. */
-function signSession(payload) {
+// ---------------------------------------------------------------------------
+// Session revocation (users.token_valid_after, epoch-second resolution)
+//
+// A session is valid only while payload.iat > UNIX_TIMESTAMP(token_valid_after).
+// Revoking advances the cutoff MONOTONICALLY to max(NOW(), cutoff + 1s), and
+// login issues iat = max(db_now, cutoff + 1). Together this orders events in
+// the same wall-clock second correctly: any session issued before a
+// revocation has iat <= the new cutoff; any session issued after has iat > it.
+// ---------------------------------------------------------------------------
+
+const REVOKE_SESSIONS_SET =
+  "token_valid_after = GREATEST(NOW(), COALESCE(token_valid_after + INTERVAL 1 SECOND, NOW()))";
+
+/**
+ * Returns a signed session token, or null when no valid secret is set.
+ * opts.notBefore: the user's current revocation cutoff (epoch seconds).
+ * opts.now: the database clock (epoch seconds) — same clock as the cutoff.
+ */
+function signSession(payload, opts) {
   const secret = sessionSecret();
   if (!secret) return null;
 
+  const dbNow = Number(opts && opts.now);
+  const now = Number.isFinite(dbNow) && dbNow > 0 ? dbNow : Math.floor(Date.now() / 1000);
+  const cutoff = Number(opts && opts.notBefore);
+  const iat = Number.isFinite(cutoff) && cutoff >= now ? cutoff + 1 : now;
   const body = {
     ...payload,
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + TTL_SECONDS,
+    iat,
+    exp: iat + TTL_SECONDS,
   };
   const data = b64url(JSON.stringify(body));
   const sig = crypto
@@ -121,7 +142,9 @@ function sessionCookie(token) {
 }
 
 function clearCookie() {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`;
+  const parts = [`${COOKIE_NAME}=`, "Path=/", "HttpOnly", "Max-Age=0", "SameSite=Lax"];
+  if (config.session.secureCookies) parts.push("Secure");
+  return parts.join("; ");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +154,8 @@ function clearCookie() {
 async function loadUserWithRoles(userId) {
   const users = await query(
     `SELECT u.id, u.username, u.full_name, u.email, u.is_active, u.status,
-            u.activated_at, u.last_login_at, u.token_valid_after
+            u.activated_at, u.last_login_at, u.token_valid_after,
+            UNIX_TIMESTAMP(u.token_valid_after) AS token_valid_after_ts
        FROM users u WHERE u.id = ? LIMIT 1`,
     [userId]
   );
@@ -172,10 +196,17 @@ async function attachUser(req, res, next) {
     if (payload && payload.uid) {
       req.user = await loadUserWithRoles(payload.uid);
       // Session invalidation gate: sessions issued before token_valid_after
-      // (set when a password changes) are dead even with a valid signature.
-      if (req.user && req.user.token_valid_after && payload.iat) {
-        const validAfterMs = new Date(String(req.user.token_valid_after).replace(" ", "T") + "Z").getTime();
-        if (Number.isFinite(validAfterMs) && payload.iat * 1000 < validAfterMs) {
+      // (set on activation, password change/reset and logout) are dead even
+      // with a valid signature. The cutoff is converted to epoch seconds by
+      // the database (UNIX_TIMESTAMP) because it was written with NOW() in the
+      // DB session time zone — parsing the DATETIME string as UTC in JS put it
+      // hours in the future on non-UTC hosts and rejected every fresh session.
+      if (req.user && payload.iat) {
+        const validAfter = Number(req.user.token_valid_after_ts);
+        // Inclusive: DATETIME has 1-second resolution, so a session issued in
+        // the same second as the revocation must also die (login compensates
+        // via signSession's notBefore).
+        if (Number.isFinite(validAfter) && validAfter > 0 && payload.iat <= validAfter) {
           req.user = null;
           next();
           return;
@@ -257,7 +288,9 @@ async function handleLogin(req, res) {
   let rows;
   try {
     rows = await query(
-      `SELECT id, username, full_name, password_hash, is_active, status
+      `SELECT id, username, full_name, password_hash, is_active, status,
+              UNIX_TIMESTAMP(token_valid_after) AS token_valid_after_ts,
+              UNIX_TIMESTAMP() AS db_now
          FROM users WHERE username = ? OR email = ? LIMIT 1`,
       [String(username).trim(), String(username).trim()]
     );
@@ -296,7 +329,10 @@ async function handleLogin(req, res) {
   const good = await bcrypt.compare(String(password), user.password_hash);
   if (!good) return fail();
 
-  const token = signSession({ uid: user.id, un: user.username });
+  const token = signSession(
+    { uid: user.id, un: user.username },
+    { notBefore: user.token_valid_after_ts, now: user.db_now }
+  );
   if (!token) {
     return res.status(503).json({ ok: false, message: "Session signing unavailable." });
   }
@@ -341,7 +377,18 @@ async function handleLogin(req, res) {
   });
 }
 
-function handleLogout(_req, res) {
+async function handleLogout(req, res) {
+  // Tokens are stateless, so clearing the cookie alone would leave a copied
+  // token valid until it expires. Move the user's revocation cutoff to now:
+  // every session issued before this second (this browser, other tabs, other
+  // devices) is rejected by attachUser from here on.
+  if (req.user && req.user.id) {
+    try {
+      await query(`UPDATE users SET ${REVOKE_SESSIONS_SET} WHERE id = ?`, [req.user.id]);
+    } catch (err) {
+      console.warn("[auth] logout revocation failed:", err.dbMessage || err.message);
+    }
+  }
   res.setHeader("Set-Cookie", clearCookie());
   return res.json({ ok: true });
 }
@@ -420,7 +467,7 @@ async function handleActivateAccount(req, res) {
     const result = await query(
       `UPDATE users
           SET password_hash = ?, status = 'active', activated_at = NOW(),
-              is_active = 1, token_valid_after = NOW()
+              is_active = 1, ${REVOKE_SESSIONS_SET}
         WHERE id = ? AND status = 'pending_activation'`,
       [hash, claim.userId]
     );
@@ -543,7 +590,7 @@ async function handleResetPassword(req, res) {
   try {
     await query(
       `UPDATE users
-          SET password_hash = ?, token_valid_after = NOW()
+          SET password_hash = ?, ${REVOKE_SESSIONS_SET}
         WHERE id = ?`,
       [hash, claim.userId]
     );

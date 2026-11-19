@@ -80,7 +80,9 @@ const config = {
     cookieName: "oneops_session",
     // 8 hours
     ttlSeconds: int(env.SESSION_TTL_SECONDS, 8 * 60 * 60),
-    secureCookies: bool(env.SESSION_SECURE_COOKIES, false),
+    // Secure by default in production (HTTPS); set SESSION_SECURE_COOKIES=false
+    // explicitly only for plain-HTTP local development.
+    secureCookies: bool(env.SESSION_SECURE_COOKIES, env.NODE_ENV === "production"),
   },
 
   // --- Bootstrap admin ------------------------------------------------------

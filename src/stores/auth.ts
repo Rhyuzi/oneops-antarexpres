@@ -24,6 +24,8 @@ const state = reactive<AuthState>({
   error: null,
 })
 
+let pendingMe: Promise<void> | null = null
+
 export const authStore = {
   state,
   get isLoggedIn(): boolean {
@@ -49,16 +51,36 @@ export const authStore = {
       .map((p) => p.charAt(0).toUpperCase())
       .join('')
   },
-  async fetchMe(): Promise<void> {
-    if (state.checked) return
-    try {
-      const resp = await axios.get('/api/auth/me')
-      state.user = resp.data.user ?? null
-    } catch {
-      state.user = null
-    } finally {
-      state.checked = true
+  /**
+   * Restores the session from the HttpOnly cookie (sent automatically —
+   * same-origin). Concurrent callers share one in-flight request. A network /
+   * 5xx failure leaves `checked` false so the next navigation retries instead
+   * of treating a transient outage as "logged out" for the rest of the page.
+   */
+  fetchMe(): Promise<void> {
+    if (state.checked) return Promise.resolve()
+    if (!pendingMe) {
+      pendingMe = axios
+        .get<{ user: AuthUser | null }>('/api/auth/me')
+        .then((resp) => {
+          state.user = resp.data.user ?? null
+          state.checked = true
+          state.error = null
+        })
+        .catch(() => {
+          state.user = null
+          state.error = 'Could not verify your session. Check your connection and try again.'
+        })
+        .finally(() => {
+          pendingMe = null
+        })
     }
+    return pendingMe
+  },
+  /** Drops client-side auth state (server already rejected the session). */
+  clearSession(): void {
+    state.user = null
+    state.checked = true
   },
   async login(username: string, password: string): Promise<boolean> {
     state.loading = true
@@ -83,5 +105,6 @@ export const authStore = {
       // ignore network failures on logout
     }
     state.user = null
+    state.checked = true
   },
 }
