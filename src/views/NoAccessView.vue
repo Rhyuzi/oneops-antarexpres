@@ -2,13 +2,15 @@
 import { useRouter } from 'vue-router'
 import { LogOut, ShieldOff } from 'lucide-vue-next'
 import { authStore } from '../stores/auth'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
 
 const router = useRouter()
 
-async function logout(): Promise<void> {
+const logoutAction = useAsyncAction(async (): Promise<void> => {
   await authStore.logout()
-  router.push('/login')
-}
+  await router.push('/login')
+})
 </script>
 
 <template>
@@ -22,8 +24,13 @@ async function logout(): Promise<void> {
       Ask a Super Admin to assign permissions through Access Management.
     </p>
     <p class="mt-1 text-xs text-slate-400">Signed in as {{ authStore.displayName }}</p>
-    <button class="btn btn-secondary mt-6" @click="logout">
+    <LoadingButton
+      class="btn btn-secondary mt-6"
+      loading-text="Signing out…"
+      :loading="logoutAction.pending"
+      @click="logoutAction.run()"
+    >
       <LogOut :size="16" /> Sign out
-    </button>
+    </LoadingButton>
   </div>
 </template>

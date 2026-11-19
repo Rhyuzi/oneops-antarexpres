@@ -21,12 +21,15 @@ import {
   XCircle,
 } from 'lucide-vue-next'
 import type { RecordStatus } from '../types'
+import LoadingButton from '../components/LoadingButton.vue'
+import { nextFrame, useAsyncAction } from '../composables/useAsyncAction'
 
 const search = ref('')
 const statusFilter = ref<RecordStatus | 'all'>('all')
 const uploadError = ref('')
 
-async function onSelect(file: File): Promise<void> {
+// One Excel import at a time (a second pick/drop while parsing is ignored).
+const importAction = useAsyncAction(async (file: File): Promise<void> => {
   uploadError.value = ''
   if (!/\.(xlsx|xls)$/i.test(file.name)) {
     uploadError.value = 'Unsupported file type. Please upload an .xlsx or .xls file.'
@@ -37,7 +40,16 @@ async function onSelect(file: File): Promise<void> {
   } catch (e) {
     uploadError.value = e instanceof Error ? e.message : 'Failed to parse the Excel file.'
   }
-}
+})
+
+// Writing the workbook is synchronous CPU work: yield a frame first so the
+// spinner paints, and one after so clicks queued while the main thread was
+// busy hit the still-disabled button instead of starting a second export.
+const exportAction = useAsyncAction(async (): Promise<void> => {
+  await nextFrame()
+  store.downloadResult()
+  await nextFrame()
+})
 
 const stats = computed(() => {
   const rs = store.state.records
@@ -126,7 +138,7 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
     <!-- Upload -->
     <section class="card p-5">
       <h2 class="section-title">Upload</h2>
-      <UploadZone @select="onSelect" />
+      <UploadZone :busy="importAction.pending" @select="importAction.run" />
       <p v-if="uploadError" class="mt-3 text-sm text-rose-600">{{ uploadError }}</p>
       <div
         v-if="store.state.fileName"
@@ -148,14 +160,21 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
             <Play :size="18" /> Start Processing
           </button>
           <template v-else>
-            <button class="btn btn-secondary" @click="store.togglePause()">
+            <button class="btn btn-secondary" :disabled="store.state.stopRequested" @click="store.togglePause()">
               <Pause v-if="!store.state.paused" :size="18" />
               <Play v-else :size="18" />
               {{ store.state.paused ? 'Resume' : 'Pause' }}
             </button>
-            <button class="btn btn-danger" @click="store.stopProcessing()">
+            <!-- Stop is a request; workers finish their in-flight lookups first. -->
+            <LoadingButton
+              class="btn btn-danger"
+              loading-text="Stopping…"
+              :spinner-size="18"
+              :loading="store.state.stopRequested"
+              @click="store.stopProcessing()"
+            >
               <Square :size="18" /> Stop
-            </button>
+            </LoadingButton>
           </template>
         </div>
       </div>
@@ -230,9 +249,16 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
               {{ opt.label }}
             </option>
           </select>
-          <button class="btn btn-primary" :disabled="stats.success === 0" @click="store.downloadResult()">
+          <LoadingButton
+            class="btn btn-primary"
+            loading-text="Exporting…"
+            :spinner-size="18"
+            :loading="exportAction.pending"
+            :disabled="stats.success === 0"
+            @click="exportAction.run()"
+          >
             <Download :size="18" /> Download Excel
-          </button>
+          </LoadingButton>
         </div>
       </div>
 

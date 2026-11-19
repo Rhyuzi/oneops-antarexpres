@@ -4,15 +4,14 @@ import { useRouter } from 'vue-router'
 import { KeyRound, ShieldCheck } from 'lucide-vue-next'
 import axios from 'axios'
 import NewPasswordForm from '../components/NewPasswordForm.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
 
 const router = useRouter()
 const token = computed(() => String(router.currentRoute.value.query.token || ''))
-const submitting = ref(false)
 const error = ref('')
 const success = ref('')
 
-async function onSubmit(password: string, confirm: string): Promise<void> {
-  submitting.value = true
+const submitAction = useAsyncAction(async (password: string, confirm: string): Promise<void> => {
   error.value = ''
   try {
     const resp = await axios.post('/api/auth/reset-password', { token: token.value, password, confirmPassword: confirm })
@@ -20,10 +19,8 @@ async function onSubmit(password: string, confirm: string): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } }
     error.value = e.response?.data?.message || 'Reset failed.'
-  } finally {
-    submitting.value = false
   }
-}
+})
 </script>
 
 <template>
@@ -44,10 +41,10 @@ async function onSubmit(password: string, confirm: string): Promise<void> {
         <NewPasswordForm
           v-else
           submit-label="Update password"
-          :submitting="submitting"
+          :submitting="submitAction.pending"
           :external-error="error"
           :external-message="success"
-          @submit="onSubmit"
+          @submit="submitAction.run"
         />
         <router-link
           v-if="success"

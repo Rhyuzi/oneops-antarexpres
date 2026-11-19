@@ -3,6 +3,7 @@
 // Emits (password) on success; parent supplies the API call + copy.
 import { reactive, ref, watch } from 'vue'
 import { Eye, EyeOff } from 'lucide-vue-next'
+import LoadingButton from './LoadingButton.vue'
 
 const props = defineProps<{
   submitLabel: string
@@ -35,6 +36,8 @@ function validate(): string {
 }
 
 function onSubmit(): void {
+  // Enter key submits the form even while the button is disabled.
+  if (props.submitting) return
   const v = validate()
   if (v) {
     localError.value = v
@@ -108,9 +111,14 @@ function onSubmit(): void {
         {{ localError || props.externalError }}
       </p>
 
-      <button class="btn btn-primary w-full" type="submit" :disabled="props.submitting">
-        {{ props.submitting ? 'Working…' : props.submitLabel }}
-      </button>
+      <LoadingButton
+        class="btn btn-primary w-full"
+        type="submit"
+        loading-text="Working…"
+        :loading="props.submitting"
+      >
+        {{ props.submitLabel }}
+      </LoadingButton>
     </form>
   </div>
 </template>

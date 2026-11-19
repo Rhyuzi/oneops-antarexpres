@@ -8,6 +8,8 @@ import {
   type PermissionRow,
   type RoleRow,
 } from '../../lib/storageApi'
+import LoadingButton from '../LoadingButton.vue'
+import { useAsyncAction } from '../../composables/useAsyncAction'
 
 const props = defineProps<{ folderId: number; folderName: string }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
@@ -15,7 +17,6 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
 const roles = ref<RoleRow[]>([])
 const rows = ref<PermissionRow[]>([])
 const loading = ref(true)
-const saving = ref(false)
 const error = ref('')
 
 const CAPS: Array<{ key: keyof PermissionRow; label: string }> = [
@@ -69,8 +70,7 @@ onMounted(async () => {
   }
 })
 
-async function save(): Promise<void> {
-  saving.value = true
+const saveAction = useAsyncAction(async (): Promise<void> => {
   error.value = ''
   try {
     // Only send rows with at least one capability set.
@@ -86,10 +86,8 @@ async function save(): Promise<void> {
     emit('close')
   } catch (err) {
     error.value = errorMessage(err, 'Save failed.')
-  } finally {
-    saving.value = false
   }
-}
+})
 </script>
 
 <template>
@@ -170,10 +168,15 @@ async function save(): Promise<void> {
 
         <div class="flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3.5">
           <button class="btn btn-secondary" @click="emit('close')">Cancel</button>
-          <button class="btn btn-primary" :disabled="loading || saving" @click="save">
-            <Loader2 v-if="saving" :size="16" class="animate-spin" />
+          <LoadingButton
+            class="btn btn-primary"
+            loading-text="Saving…"
+            :loading="saveAction.pending"
+            :disabled="loading"
+            @click="saveAction.run()"
+          >
             Save permissions
-          </button>
+          </LoadingButton>
         </div>
       </div>
     </div>

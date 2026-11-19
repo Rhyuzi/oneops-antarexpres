@@ -26,6 +26,8 @@ import FileIcon from '../components/storage/FileIcon.vue'
 import FilePreviewModal from '../components/storage/FilePreviewModal.vue'
 import PermissionModal from '../components/storage/PermissionModal.vue'
 import ToastStack from '../components/storage/ToastStack.vue'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
 import {
   deleteFile,
   deleteFolder,
@@ -57,7 +59,12 @@ const fileDeleteTarget = ref<StorageFile | null>(null)
 const folderDeleteTarget = ref<StorageFolder | null>(null)
 const previewFile = ref<StorageFile | null>(null)
 const permissionFolder = ref<StorageFolder | null>(null)
-const busy = ref(false)
+// Duplicate-action guards: one lock per folder / per file covers every menu,
+// dialog and Enter-key path that mutates it; downloads have their own lock so
+// they never block (or get blocked by) edits of other items.
+const folderOps = useKeyedActions()
+const fileOps = useKeyedActions()
+const downloadOps = useKeyedActions()
 const searchInput = ref('')
 const dragOver = ref(false)
 const searchDebounce = ref<number>(0)
@@ -122,91 +129,103 @@ function closeAllMenus(): void {
 }
 
 // -- actions -----------------------------------------------------------------
-async function createFolder(): Promise<void> {
-  if (!newFolderName.value.trim() || busy.value) return
-  busy.value = true
+const createFolderAction = useAsyncAction(async (): Promise<void> => {
+  if (!newFolderName.value.trim()) return
   const ok = await store.createFolder(newFolderName.value.trim(), newFolderDesc.value.trim())
-  busy.value = false
   if (ok) {
     showCreateFolder.value = false
     newFolderName.value = ''
     newFolderDesc.value = ''
   }
+})
+
+function doRenameFolder(): void {
+  const target = renameTarget.value
+  const name = renameValue.value.trim()
+  if (!target || !name) return
+  void folderOps.run(target.id, 'rename', async () => {
+    if (await store.renameFolder(target.id, name)) renameTarget.value = null
+  })
 }
 
-async function doRenameFolder(): Promise<void> {
-  if (!renameTarget.value || !renameValue.value.trim()) return
-  busy.value = true
-  const ok = await store.renameFolder(renameTarget.value.id, renameValue.value.trim())
-  busy.value = false
-  if (ok) renameTarget.value = null
+function doMoveFolder(): void {
+  const target = moveTarget.value
+  if (!target) return
+  const parentId = moveParentId.value
+  void folderOps.run(target.id, 'move', async () => {
+    if (await store.moveFolder(target.id, parentId)) moveTarget.value = null
+  })
 }
 
-async function doMoveFolder(): Promise<void> {
-  if (!moveTarget.value) return
-  busy.value = true
-  const ok = await store.moveFolder(moveTarget.value.id, moveParentId.value)
-  busy.value = false
-  if (ok) moveTarget.value = null
+function doDeleteFolder(): void {
+  const target = folderDeleteTarget.value
+  if (!target) return
+  void folderOps.run(target.id, 'delete', async () => {
+    if (await store.removeFolder(target.id)) folderDeleteTarget.value = null
+  })
 }
 
-async function doDeleteFolder(): Promise<void> {
-  if (!folderDeleteTarget.value) return
-  busy.value = true
-  const ok = await store.removeFolder(folderDeleteTarget.value.id)
-  busy.value = false
-  if (ok) folderDeleteTarget.value = null
+function doRenameFile(): void {
+  const target = fileRenameTarget.value
+  const name = fileRenameValue.value.trim()
+  if (!target || !name) return
+  void fileOps.run(target.id, 'rename', () => renameFile(target, name))
 }
 
-async function doRenameFile(): Promise<void> {
-  if (!fileRenameTarget.value || !fileRenameValue.value.trim()) return
-  busy.value = true
+async function renameFile(target: StorageFile, name: string): Promise<void> {
   try {
-    await updateFile(fileRenameTarget.value.id, { name: fileRenameValue.value.trim() })
+    await updateFile(target.id, { name })
     store.toast('success', 'File renamed.')
     fileRenameTarget.value = null
     await store.refreshFiles()
   } catch (err) {
     const e = err as { response?: { data?: { message?: string } } }
     store.toast('error', e.response?.data?.message || 'Rename failed.')
-  } finally {
-    busy.value = false
   }
 }
 
-async function doMoveFile(): Promise<void> {
-  if (!fileMoveTarget.value || !fileMoveFolderId.value) return
-  busy.value = true
+function doMoveFile(): void {
+  const target = fileMoveTarget.value
+  const folderId = fileMoveFolderId.value
+  if (!target || !folderId) return
+  void fileOps.run(target.id, 'move', () => moveFile(target, folderId))
+}
+
+async function moveFile(target: StorageFile, folderId: number): Promise<void> {
   try {
-    await updateFile(fileMoveTarget.value.id, { folderId: fileMoveFolderId.value })
+    await updateFile(target.id, { folderId })
     store.toast('success', 'File moved.')
     fileMoveTarget.value = null
     await Promise.all([store.refreshFiles(), store.refreshFolders()])
   } catch (err) {
     const e = err as { response?: { data?: { message?: string } } }
     store.toast('error', e.response?.data?.message || 'Move failed.')
-  } finally {
-    busy.value = false
   }
 }
 
-async function doDeleteFile(): Promise<void> {
-  if (!fileDeleteTarget.value) return
-  busy.value = true
+function doDeleteFile(): void {
+  const target = fileDeleteTarget.value
+  if (!target) return
+  void fileOps.run(target.id, 'delete', () => removeFile(target))
+}
+
+async function removeFile(target: StorageFile): Promise<void> {
   try {
-    await deleteFile(fileDeleteTarget.value.id)
+    await deleteFile(target.id)
     store.toast('success', 'File deleted.')
     fileDeleteTarget.value = null
     await Promise.all([store.refreshFiles(), store.refreshFolders()])
   } catch (err) {
     const e = err as { response?: { data?: { message?: string } } }
     store.toast('error', e.response?.data?.message || 'Delete failed.')
-  } finally {
-    busy.value = false
   }
 }
 
-async function download(file: StorageFile): Promise<void> {
+function download(file: StorageFile): void {
+  void downloadOps.run(file.id, 'download', () => startDownload(file))
+}
+
+async function startDownload(file: StorageFile): Promise<void> {
   try {
     const url = await getDownloadUrl(file.id)
     const a = document.createElement('a')
@@ -281,13 +300,15 @@ function folderMenuId(f: StorageFolder): string {
         >
           <FolderPlus :size="16" /> New folder
         </button>
-        <button
+        <LoadingButton
           v-if="canUpload"
           class="btn btn-primary"
+          loading-text="Uploading…"
+          :loading="store.uploading"
           @click="openFilePicker"
         >
           <Upload :size="16" /> Upload
-        </button>
+        </LoadingButton>
       </div>
     </div>
 
@@ -493,14 +514,16 @@ function folderMenuId(f: StorageFolder): string {
                     </button>
                     <button
                       v-if="folder.permissions.can_rename"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="folderOps.isBusy(folder.id)"
                       @click="renameTarget = folder; renameValue = folder.name"
                     >
                       <Pencil :size="15" /> Rename
                     </button>
                     <button
                       v-if="folder.permissions.can_move"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="folderOps.isBusy(folder.id)"
                       @click="moveTarget = folder; moveParentId = folder.parent_id"
                     >
                       <FolderInput :size="15" /> Move
@@ -512,13 +535,16 @@ function folderMenuId(f: StorageFolder): string {
                     >
                       <Shield :size="15" /> Permissions
                     </button>
-                    <button
+                    <LoadingButton
                       v-if="folder.permissions.can_delete"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-rose-600 hover:bg-rose-50"
+                      :spinner-size="15"
+                      :loading="folderOps.isPending(folder.id, 'delete')"
+                      :disabled="folderOps.isBusy(folder.id)"
                       @click="folderDeleteTarget = folder"
                     >
                       <Trash2 :size="15" /> Delete
-                    </button>
+                    </LoadingButton>
                   </div>
                 </div>
               </div>
@@ -591,34 +617,42 @@ function folderMenuId(f: StorageFolder): string {
                     >
                       <FileIcon :extension="file.file_extension" :size="15" /> Preview
                     </button>
-                    <button
+                    <LoadingButton
                       v-if="fileCaps?.can_download"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :spinner-size="15"
+                      loading-text="Preparing…"
+                      :loading="downloadOps.isPending(file.id, 'download')"
                       @click="download(file)"
                     >
                       <Upload :size="15" class="rotate-180" /> Download
-                    </button>
+                    </LoadingButton>
                     <button
                       v-if="fileCaps?.can_rename"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="fileOps.isBusy(file.id)"
                       @click="fileRenameTarget = file; fileRenameValue = file.file_name"
                     >
                       <Pencil :size="15" /> Rename
                     </button>
                     <button
                       v-if="fileCaps?.can_move"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="fileOps.isBusy(file.id)"
                       @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
                     >
                       <FolderInput :size="15" /> Move
                     </button>
-                    <button
+                    <LoadingButton
                       v-if="fileCaps?.can_delete"
-                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-rose-600 hover:bg-rose-50"
+                      :spinner-size="15"
+                      :loading="fileOps.isPending(file.id, 'delete')"
+                      :disabled="fileOps.isBusy(file.id)"
                       @click="fileDeleteTarget = file"
                     >
                       <Trash2 :size="15" /> Delete
-                    </button>
+                    </LoadingButton>
                   </div>
                 </div>
               </div>
@@ -675,34 +709,42 @@ function folderMenuId(f: StorageFolder): string {
                           >
                             Preview
                           </button>
-                          <button
+                          <LoadingButton
                             v-if="fileCaps?.can_download"
-                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                            :spinner-size="15"
+                            loading-text="Preparing…"
+                            :loading="downloadOps.isPending(file.id, 'download')"
                             @click="download(file)"
                           >
                             Download
-                          </button>
+                          </LoadingButton>
                           <button
                             v-if="fileCaps?.can_rename"
-                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                            :disabled="fileOps.isBusy(file.id)"
                             @click="fileRenameTarget = file; fileRenameValue = file.file_name"
                           >
                             Rename
                           </button>
                           <button
                             v-if="fileCaps?.can_move"
-                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                            :disabled="fileOps.isBusy(file.id)"
                             @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
                           >
                             Move
                           </button>
-                          <button
+                          <LoadingButton
                             v-if="fileCaps?.can_delete"
-                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-rose-600 hover:bg-rose-50"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-rose-600 hover:bg-rose-50"
+                            :spinner-size="15"
+                            :loading="fileOps.isPending(file.id, 'delete')"
+                            :disabled="fileOps.isBusy(file.id)"
                             @click="fileDeleteTarget = file"
                           >
                             Delete
-                          </button>
+                          </LoadingButton>
                         </div>
                       </td>
                     </tr>
@@ -718,14 +760,14 @@ function folderMenuId(f: StorageFolder): string {
                 <div class="flex gap-2">
                   <button
                     class="btn btn-secondary px-3 py-1.5"
-                    :disabled="store.state.filesPage <= 1"
+                    :disabled="store.state.filesPage <= 1 || store.state.filesLoading"
                     @click="store.setPage(store.state.filesPage - 1)"
                   >
                     Prev
                   </button>
                   <button
                     class="btn btn-secondary px-3 py-1.5"
-                    :disabled="store.state.filesPage >= totalPages"
+                    :disabled="store.state.filesPage >= totalPages || store.state.filesLoading"
                     @click="store.setPage(store.state.filesPage + 1)"
                   >
                     Next
@@ -802,7 +844,7 @@ function folderMenuId(f: StorageFolder): string {
                 type="text"
                 maxlength="191"
                 autofocus
-                @keyup.enter="createFolder"
+                @keyup.enter="createFolderAction.run()"
               />
             </div>
             <div>
@@ -811,10 +853,15 @@ function folderMenuId(f: StorageFolder): string {
             </div>
             <div class="flex justify-end gap-3">
               <button class="btn btn-secondary" @click="showCreateFolder = false">Cancel</button>
-              <button class="btn btn-primary" :disabled="busy || !newFolderName.trim()" @click="createFolder">
-                <Loader2 v-if="busy" :size="16" class="animate-spin" />
+              <LoadingButton
+                class="btn btn-primary"
+                loading-text="Creating…"
+                :loading="createFolderAction.pending"
+                :disabled="!newFolderName.trim()"
+                @click="createFolderAction.run()"
+              >
                 Create
-              </button>
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -833,9 +880,15 @@ function folderMenuId(f: StorageFolder): string {
           <input v-model="renameValue" class="input" type="text" maxlength="191" autofocus @keyup.enter="doRenameFolder" />
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="renameTarget = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="busy || !renameValue.trim()" @click="doRenameFolder">
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Renaming…"
+              :loading="folderOps.isPending(renameTarget.id, 'rename')"
+              :disabled="!renameValue.trim() || folderOps.isBusy(renameTarget.id)"
+              @click="doRenameFolder"
+            >
               Rename
-            </button>
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -859,7 +912,15 @@ function folderMenuId(f: StorageFolder): string {
           </select>
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="moveTarget = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="busy" @click="doMoveFolder">Move</button>
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Moving…"
+              :loading="folderOps.isPending(moveTarget.id, 'move')"
+              :disabled="folderOps.isBusy(moveTarget.id)"
+              @click="doMoveFolder"
+            >
+              Move
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -881,7 +942,15 @@ function folderMenuId(f: StorageFolder): string {
           </p>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="folderDeleteTarget = null">Cancel</button>
-            <button class="btn btn-danger" :disabled="busy" @click="doDeleteFolder">Delete</button>
+            <LoadingButton
+              class="btn btn-danger"
+              loading-text="Deleting…"
+              :loading="folderOps.isPending(folderDeleteTarget.id, 'delete')"
+              :disabled="folderOps.isBusy(folderDeleteTarget.id)"
+              @click="doDeleteFolder"
+            >
+              Delete
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -899,9 +968,15 @@ function folderMenuId(f: StorageFolder): string {
           <input v-model="fileRenameValue" class="input" type="text" maxlength="255" autofocus @keyup.enter="doRenameFile" />
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="fileRenameTarget = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="busy || !fileRenameValue.trim()" @click="doRenameFile">
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Renaming…"
+              :loading="fileOps.isPending(fileRenameTarget.id, 'rename')"
+              :disabled="!fileRenameValue.trim() || fileOps.isBusy(fileRenameTarget.id)"
+              @click="doRenameFile"
+            >
               Rename
-            </button>
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -922,7 +997,15 @@ function folderMenuId(f: StorageFolder): string {
           </select>
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="fileMoveTarget = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="busy || !fileMoveFolderId" @click="doMoveFile">Move</button>
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Moving…"
+              :loading="fileOps.isPending(fileMoveTarget.id, 'move')"
+              :disabled="!fileMoveFolderId || fileOps.isBusy(fileMoveTarget.id)"
+              @click="doMoveFile"
+            >
+              Move
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -943,7 +1026,15 @@ function folderMenuId(f: StorageFolder): string {
           </p>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="fileDeleteTarget = null">Cancel</button>
-            <button class="btn btn-danger" :disabled="busy" @click="doDeleteFile">Delete</button>
+            <LoadingButton
+              class="btn btn-danger"
+              loading-text="Deleting…"
+              :loading="fileOps.isPending(fileDeleteTarget.id, 'delete')"
+              :disabled="fileOps.isBusy(fileDeleteTarget.id)"
+              @click="doDeleteFile"
+            >
+              Delete
+            </LoadingButton>
           </div>
         </div>
       </div>

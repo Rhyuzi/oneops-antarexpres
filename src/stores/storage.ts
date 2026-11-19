@@ -69,6 +69,14 @@ const state = reactive<StorageState>({
 
 let toastSeq = 1
 
+// Files currently being uploaded (folder + name + size + mtime). A second
+// pick/drop of the same file while its upload is still running is skipped,
+// so double-submitting never creates duplicate objects/versions.
+const uploadsInFlight = new Set<string>()
+function uploadKey(folderId: number, file: File): string {
+  return `${folderId}|${file.name}|${file.size}|${file.lastModified}`
+}
+
 function isRoot(id: number | 'root'): id is 'root' {
   return id === 'root' || id === 0
 }
@@ -84,6 +92,10 @@ export const storageStore = {
   get currentCapabilities() {
     if (isRoot(state.currentFolderId)) return null
     return folderById(Number(state.currentFolderId))?.permissions ?? null
+  },
+  /** True while any upload is transferring or finalizing. */
+  get uploading(): boolean {
+    return state.uploads.some((u) => u.status === 'uploading' || u.status === 'finalizing')
   },
   get rootFolders(): StorageFolder[] {
     return state.folders.filter((f) => f.parent_id === null)
@@ -268,7 +280,14 @@ export const storageStore = {
     }
     const folderId = Number(state.currentFolderId)
 
-    for (const file of files) {
+    const accepted = files.filter((file) => !uploadsInFlight.has(uploadKey(folderId, file)))
+    if (accepted.length < files.length) {
+      this.toast('error', 'Skipped file(s) that are already uploading.')
+    }
+    if (!accepted.length) return
+    accepted.forEach((file) => uploadsInFlight.add(uploadKey(folderId, file)))
+
+    for (const file of accepted) {
       const itemId = `up-${toastSeq++}`
       state.uploads.push({
         id: itemId,
@@ -310,6 +329,8 @@ export const storageStore = {
           const idx = state.uploads.findIndex((u) => u.id === itemId)
           if (idx >= 0) state.uploads.splice(idx, 1)
         }, 6000)
+      } finally {
+        uploadsInFlight.delete(uploadKey(folderId, file))
       }
     }
 

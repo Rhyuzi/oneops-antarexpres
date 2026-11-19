@@ -13,6 +13,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import { authStore } from '../stores/auth'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
 
 const route = useRoute()
 const router = useRouter()
@@ -86,10 +88,10 @@ function isActive(name: string): boolean {
   return route.name === name
 }
 
-async function logout(): Promise<void> {
+const logoutAction = useAsyncAction(async (): Promise<void> => {
   await authStore.logout()
-  router.push('/login')
-}
+  await router.push('/login')
+})
 </script>
 
 <template>
@@ -174,14 +176,16 @@ async function logout(): Promise<void> {
               {{ authStore.state.user?.roles.join(', ').replace(/_/g, ' ') || '' }}
             </p>
           </div>
-          <button
+          <LoadingButton
             v-if="!(collapsed && isDesktop)"
-            class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600"
+            class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed"
             title="Sign out"
-            @click="logout"
+            :spinner-size="18"
+            :loading="logoutAction.pending"
+            @click="logoutAction.run()"
           >
             <LogOut :size="18" />
-          </button>
+          </LoadingButton>
         </div>
 
         <button

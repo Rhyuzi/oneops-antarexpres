@@ -23,6 +23,8 @@ import {
 } from 'lucide-vue-next'
 import axios from 'axios'
 import { authStore } from '../stores/auth'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
 
 interface Account {
   id: number
@@ -73,15 +75,12 @@ const isSuper = computed(() => authStore.isSuperAdmin)
 // dialogs
 const showCreate = ref(false)
 const createForm = ref({ full_name: '', email: '', username: '', roles: [] as string[], invite: true })
-const createBusy = ref(false)
 const createWarning = ref('')
 const editTarget = ref<Account | null>(null)
 const editName = ref('')
 const editEmail = ref('')
-const editBusy = ref(false)
 const rolesTarget = ref<Account | null>(null)
 const rolesDraft = ref<string[]>([])
-const rolesBusy = ref(false)
 const resetTarget = ref<Account | null>(null)
 const deleteTarget = ref<Account | null>(null)
 const detail = ref<Account | null>(null)
@@ -171,9 +170,7 @@ function initials(name: string): string {
 }
 
 // --- create -------------------------------------------------------------------
-async function doCreate(): Promise<void> {
-  if (createBusy.value) return
-  createBusy.value = true
+const createAction = useAsyncAction(async (): Promise<void> => {
   createWarning.value = ''
   try {
     const resp = await axios.post('/api/accounts', {
@@ -190,10 +187,8 @@ async function doCreate(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } }
     notify('error', e.response?.data?.message || 'Create failed.')
-  } finally {
-    createBusy.value = false
   }
-}
+})
 
 function toggleDraftRole(name: string): void {
   const i = rolesDraft.value.indexOf(name)
@@ -207,11 +202,14 @@ function toggleCreateRole(name: string): void {
 }
 
 // --- edit / roles / status ------------------------------------------------------
-async function doEdit(): Promise<void> {
-  if (!editTarget.value || editBusy.value) return
-  editBusy.value = true
+// One lock per account: while any mutation for an account is in flight, every
+// other mutation for that same account (row buttons, confirm dialogs, edit
+// dialogs) is rejected. Other accounts' rows stay fully usable.
+const accountOps = useKeyedActions()
+
+async function doEdit(target: Account): Promise<void> {
   try {
-    await axios.put(`/api/accounts/${editTarget.value.id}`, {
+    await axios.put(`/api/accounts/${target.id}`, {
       full_name: editName.value,
       email: editEmail.value,
     })
@@ -221,24 +219,18 @@ async function doEdit(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } }
     notify('error', e.response?.data?.message || 'Update failed.')
-  } finally {
-    editBusy.value = false
   }
 }
 
-async function doRoles(): Promise<void> {
-  if (!rolesTarget.value || rolesBusy.value) return
-  rolesBusy.value = true
+async function doRoles(target: Account): Promise<void> {
   try {
-    await axios.patch(`/api/accounts/${rolesTarget.value.id}/roles`, { roles: rolesDraft.value })
+    await axios.patch(`/api/accounts/${target.id}/roles`, { roles: rolesDraft.value })
     notify('success', 'Roles updated.')
     rolesTarget.value = null
     await loadAccounts()
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } }
     notify('error', e.response?.data?.message || 'Update failed.')
-  } finally {
-    rolesBusy.value = false
   }
 }
 
@@ -286,10 +278,9 @@ async function triggerReset(account: Account): Promise<void> {
   }
 }
 
-async function doDelete(): Promise<void> {
-  if (!deleteTarget.value) return
+async function doDelete(target: Account): Promise<void> {
   try {
-    await axios.delete(`/api/accounts/${deleteTarget.value.id}`)
+    await axios.delete(`/api/accounts/${target.id}`)
     notify('success', 'Account deleted.')
     deleteTarget.value = null
     await loadAccounts()
@@ -299,14 +290,14 @@ async function doDelete(): Promise<void> {
   }
 }
 
-async function openDetail(account: Account): Promise<void> {
+const detailAction = useAsyncAction(async (account: Account): Promise<void> => {
   try {
     const resp = await axios.get(`/api/accounts/${account.id}`)
     detail.value = resp.data.account
   } catch {
     detail.value = account
   }
-}
+})
 
 const selfId = computed(() => authStore.state.user?.id)
 </script>
@@ -354,8 +345,8 @@ const selfId = computed(() => authStore.state.user?.id)
         <option value="inactive">Inactive</option>
         <option value="suspended">Suspended</option>
       </select>
-      <button class="btn btn-ghost px-3 py-2" @click="loadAccounts">
-        <RefreshCw :size="15" />
+      <button class="btn btn-ghost px-3 py-2" title="Refresh" :disabled="loading" :aria-busy="loading ? 'true' : undefined" @click="loadAccounts">
+        <RefreshCw :size="15" :class="{ 'animate-spin': loading }" />
       </button>
     </div>
 
@@ -387,7 +378,7 @@ const selfId = computed(() => authStore.state.user?.id)
               :key="a.id"
               class="group border-b border-slate-100 last:border-0 hover:bg-slate-50"
             >
-              <td class="cursor-pointer px-4 py-3" @click="openDetail(a)">
+              <td class="cursor-pointer px-4 py-3" @click="detailAction.run(a)">
                 <div class="flex items-center gap-3">
                   <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">
                     {{ initials(a.full_name) }}
@@ -427,29 +418,72 @@ const selfId = computed(() => authStore.state.user?.id)
               <td class="px-4 py-3">
                 <div class="flex flex-wrap items-center gap-1">
                   <template v-if="a.status === 'pending_activation'">
-                    <button v-if="canInvite" class="btn btn-ghost px-2 py-1 text-xs" title="Resend invitation" @click="resendInvitation(a)">
+                    <LoadingButton
+                      v-if="canInvite"
+                      class="btn btn-ghost px-2 py-1 text-xs"
+                      title="Resend invitation"
+                      :spinner-size="13"
+                      loading-text="Sending…"
+                      :loading="accountOps.isPending(a.id, 'resend')"
+                      :disabled="accountOps.isBusy(a.id)"
+                      @click="accountOps.run(a.id, 'resend', () => resendInvitation(a))"
+                    >
                       <Mail :size="13" /> Resend
-                    </button>
-                    <button v-if="canInvite" class="btn btn-ghost px-2 py-1 text-xs text-rose-600" title="Revoke invitation" @click="revokeInvitation(a)">
+                    </LoadingButton>
+                    <LoadingButton
+                      v-if="canInvite"
+                      class="btn btn-ghost px-2 py-1 text-xs text-rose-600"
+                      title="Revoke invitation"
+                      :spinner-size="13"
+                      loading-text="Revoking…"
+                      :loading="accountOps.isPending(a.id, 'revoke')"
+                      :disabled="accountOps.isBusy(a.id)"
+                      @click="accountOps.run(a.id, 'revoke', () => revokeInvitation(a))"
+                    >
                       <MailX :size="13" /> Revoke
-                    </button>
+                    </LoadingButton>
                   </template>
                   <template v-else>
-                    <button v-if="canEdit" class="btn btn-ghost px-2 py-1 text-xs" title="Edit profile" @click="editTarget = a; editName = a.full_name; editEmail = a.email || ''">
+                    <button v-if="canEdit" class="btn btn-ghost px-2 py-1 text-xs" title="Edit profile" :disabled="accountOps.isBusy(a.id)" @click="editTarget = a; editName = a.full_name; editEmail = a.email || ''">
                       <Pencil :size="13" /> Edit
                     </button>
-                    <button v-if="canAssign && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs" title="Change roles" @click="rolesTarget = a; rolesDraft = [...a.roles]">
+                    <button v-if="canAssign && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs" title="Change roles" :disabled="accountOps.isBusy(a.id)" @click="rolesTarget = a; rolesDraft = [...a.roles]">
                       <ShieldCheck :size="13" /> Roles
                     </button>
-                    <button v-if="canStatus && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs" :class="a.status === 'active' ? 'text-amber-600' : 'text-emerald-600'" @click="setStatus(a, a.status === 'active' ? 'inactive' : 'active')">
+                    <LoadingButton
+                      v-if="canStatus && a.id !== selfId"
+                      class="btn btn-ghost px-2 py-1 text-xs"
+                      :class="a.status === 'active' ? 'text-amber-600' : 'text-emerald-600'"
+                      :spinner-size="13"
+                      :loading-text="a.status === 'active' ? 'Deactivating…' : 'Activating…'"
+                      :loading="accountOps.isPending(a.id, 'status')"
+                      :disabled="accountOps.isBusy(a.id)"
+                      @click="accountOps.run(a.id, 'status', () => setStatus(a, a.status === 'active' ? 'inactive' : 'active'))"
+                    >
                       <UserCheck :size="13" /> {{ a.status === 'active' ? 'Deactivate' : 'Activate' }}
-                    </button>
-                    <button v-if="canReset" class="btn btn-ghost px-2 py-1 text-xs" title="Send password reset email" @click="resetTarget = a">
+                    </LoadingButton>
+                    <LoadingButton
+                      v-if="canReset"
+                      class="btn btn-ghost px-2 py-1 text-xs"
+                      title="Send password reset email"
+                      :spinner-size="13"
+                      :loading="accountOps.isPending(a.id, 'reset')"
+                      :disabled="accountOps.isBusy(a.id)"
+                      @click="resetTarget = a"
+                    >
                       <KeyRound :size="13" /> Reset
-                    </button>
-                    <button v-if="canDelete && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs text-rose-600" @click="deleteTarget = a">
+                    </LoadingButton>
+                    <LoadingButton
+                      v-if="canDelete && a.id !== selfId"
+                      class="btn btn-ghost px-2 py-1 text-xs text-rose-600"
+                      title="Delete account"
+                      :spinner-size="13"
+                      :loading="accountOps.isPending(a.id, 'delete')"
+                      :disabled="accountOps.isBusy(a.id)"
+                      @click="deleteTarget = a"
+                    >
                       <Trash2 :size="13" />
-                    </button>
+                    </LoadingButton>
                   </template>
                 </div>
               </td>
@@ -461,10 +495,10 @@ const selfId = computed(() => authStore.state.user?.id)
         <div v-if="totalPages > 1" class="mt-4 flex items-center justify-between text-sm">
           <span class="text-slate-500">Page {{ page }} of {{ totalPages }} · {{ total }} accounts</span>
           <div class="flex gap-2">
-            <button class="btn btn-secondary px-3 py-1.5" :disabled="page <= 1" @click="page--; loadAccounts()">
+            <button class="btn btn-secondary px-3 py-1.5" :disabled="page <= 1 || loading" @click="page--; loadAccounts()">
               <ChevronLeft :size="14" /> Prev
             </button>
-            <button class="btn btn-secondary px-3 py-1.5" :disabled="page >= totalPages" @click="page++; loadAccounts()">
+            <button class="btn btn-secondary px-3 py-1.5" :disabled="page >= totalPages || loading" @click="page++; loadAccounts()">
               Next <ChevronRight :size="14" />
             </button>
           </div>
@@ -519,9 +553,15 @@ const selfId = computed(() => authStore.state.user?.id)
             <p v-if="createWarning" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">{{ createWarning }}</p>
             <div class="flex justify-end gap-3">
               <button class="btn btn-secondary" @click="showCreate = false">Cancel</button>
-              <button class="btn btn-primary" :disabled="createBusy || !createForm.full_name || !createForm.email || !createForm.username || !createForm.roles.length" @click="doCreate">
-                <Loader2 v-if="createBusy" :size="16" class="animate-spin" /> Create &amp; invite
-              </button>
+              <LoadingButton
+                class="btn btn-primary"
+                loading-text="Creating…"
+                :loading="createAction.pending"
+                :disabled="!createForm.full_name || !createForm.email || !createForm.username || !createForm.roles.length"
+                @click="createAction.run()"
+              >
+                Create &amp; invite
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -544,7 +584,15 @@ const selfId = computed(() => authStore.state.user?.id)
             </div>
             <div class="flex justify-end gap-3">
               <button class="btn btn-secondary" @click="editTarget = null">Cancel</button>
-              <button class="btn btn-primary" :disabled="editBusy" @click="doEdit">Save</button>
+              <LoadingButton
+                class="btn btn-primary"
+                loading-text="Saving…"
+                :loading="accountOps.isPending(editTarget.id, 'edit')"
+                :disabled="accountOps.isBusy(editTarget.id)"
+                @click="accountOps.run(editTarget.id, 'edit', () => doEdit(editTarget!))"
+              >
+                Save
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -578,9 +626,15 @@ const selfId = computed(() => authStore.state.user?.id)
           </p>
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="rolesTarget = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="rolesBusy || !rolesDraft.length" @click="doRoles">
-              <Loader2 v-if="rolesBusy" :size="16" class="animate-spin" /> Save roles
-            </button>
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Saving…"
+              :loading="accountOps.isPending(rolesTarget.id, 'roles')"
+              :disabled="!rolesDraft.length || accountOps.isBusy(rolesTarget.id)"
+              @click="accountOps.run(rolesTarget.id, 'roles', () => doRoles(rolesTarget!))"
+            >
+              Save roles
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -597,9 +651,15 @@ const selfId = computed(() => authStore.state.user?.id)
           </p>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="resetTarget = null">Cancel</button>
-            <button class="btn btn-primary" @click="triggerReset(resetTarget)">
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Sending…"
+              :loading="accountOps.isPending(resetTarget.id, 'reset')"
+              :disabled="accountOps.isBusy(resetTarget.id)"
+              @click="accountOps.run(resetTarget.id, 'reset', () => triggerReset(resetTarget!))"
+            >
               <KeyRound :size="15" /> Send reset email
-            </button>
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -616,7 +676,15 @@ const selfId = computed(() => authStore.state.user?.id)
           </p>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="deleteTarget = null">Cancel</button>
-            <button class="btn btn-danger" @click="doDelete">Delete</button>
+            <LoadingButton
+              class="btn btn-danger"
+              loading-text="Deleting…"
+              :loading="accountOps.isPending(deleteTarget.id, 'delete')"
+              :disabled="accountOps.isBusy(deleteTarget.id)"
+              @click="accountOps.run(deleteTarget.id, 'delete', () => doDelete(deleteTarget!))"
+            >
+              Delete
+            </LoadingButton>
           </div>
         </div>
       </div>

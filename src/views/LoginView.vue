@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ShieldCheck } from 'lucide-vue-next'
 import { authStore } from '../stores/auth'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
 
 const router = useRouter()
 const route = useRoute()
@@ -10,22 +12,21 @@ const route = useRoute()
 const username = ref('')
 const password = ref('')
 const showPassword = ref(false)
-const submitting = ref(false)
 const error = ref('')
 
-async function submit(): Promise<void> {
-  if (submitting.value || !username.value || !password.value) return
-  submitting.value = true
+// Guards both the button and Enter-key submits; stays loading until the
+// post-login navigation finishes so the form cannot be re-submitted.
+const submitAction = useAsyncAction(async (): Promise<void> => {
+  if (!username.value || !password.value) return
   error.value = ''
   const ok = await authStore.login(username.value.trim(), password.value)
-  submitting.value = false
   if (ok) {
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/ops/data-warrior'
-    router.push(redirect)
+    await router.push(redirect)
   } else {
     error.value = authStore.state.error || 'Login failed.'
   }
-}
+})
 </script>
 
 <template>
@@ -39,7 +40,7 @@ async function submit(): Promise<void> {
         <p class="mt-1 text-sm text-slate-500">AntarXpress operations platform</p>
       </div>
 
-      <form class="card p-6" @submit.prevent="submit">
+      <form class="card p-6" @submit.prevent="submitAction.run()">
         <div class="space-y-4">
           <div>
             <label class="label" for="username">Username</label>
@@ -78,9 +79,14 @@ async function submit(): Promise<void> {
             {{ error }}
           </p>
 
-          <button class="btn btn-primary w-full" type="submit" :disabled="submitting">
-            {{ submitting ? 'Signing in…' : 'Sign in' }}
-          </button>
+          <LoadingButton
+            class="btn btn-primary w-full"
+            type="submit"
+            loading-text="Signing in…"
+            :loading="submitAction.pending"
+          >
+            Sign in
+          </LoadingButton>
 
           <router-link
             class="block text-center text-sm font-medium text-indigo-600 hover:text-indigo-800"

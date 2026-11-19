@@ -20,6 +20,8 @@ import {
 } from 'lucide-vue-next'
 import axios from 'axios'
 import { authStore } from '../stores/auth'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
 
 // --- types -----------------------------------------------------------------
 interface Role {
@@ -92,7 +94,6 @@ const granted = ref<Set<string>>(new Set())
 const draftPerms = ref<Set<string>>(new Set())
 const permsDirty = ref(false)
 const permsLoading = ref(false)
-const permsSaving = ref(false)
 
 const folders = ref<FolderRow[]>([])
 const foldersExpanded = ref<Set<number>>(new Set())
@@ -102,7 +103,6 @@ const folderExplicit = ref<Record<number, FolderPerms>>({})
 const folderInherited = ref<Record<number, Partial<FolderPerms>>>({})
 const folderDraft = ref<FolderPerms | null>(null)
 const folderDirty = ref(false)
-const folderSaving = ref(false)
 
 const users = ref<AmUser[]>([])
 const usersSearch = ref('')
@@ -110,18 +110,22 @@ const usersLoading = ref(false)
 const editUser = ref<AmUser | null>(null)
 const editUserRoles = ref<string[]>([])
 const userRolesDirty = ref(false)
-const userSaving = ref(false)
 
 const showCreateRole = ref(false)
 const newRoleName = ref('')
 const newRoleDesc = ref('')
-const createBusy = ref(false)
 const editRole = ref<Role | null>(null)
 const editRoleName = ref('')
 const editRoleDesc = ref('')
 const editRoleActive = ref(true)
 const deleteRoleTarget = ref<Role | null>(null)
-const busy = ref(false)
+
+// Duplicate-action guards. Keyed locks serialize mutations per entity
+// (role / user / role+folder) across every button and dialog that can
+// trigger them; different entities never block each other.
+const roleOps = useKeyedActions()
+const userOps = useKeyedActions()
+const folderOps = useKeyedActions()
 
 const toast = ref<{ kind: 'success' | 'error'; message: string } | null>(null)
 let toastTimer = 0
@@ -300,9 +304,8 @@ function toggleModuleAll(module: string): void {
   permsDirty.value = !setsEqual(draftPerms.value, granted.value)
 }
 
-async function savePermissions(): Promise<void> {
+const savePermsAction = useAsyncAction(async (): Promise<void> => {
   if (!selectedRoleId.value) return
-  permsSaving.value = true
   try {
     await axios.put(`/api/access-management/roles/${selectedRoleId.value}/permissions`, {
       permissions: [...draftPerms.value],
@@ -313,10 +316,8 @@ async function savePermissions(): Promise<void> {
     notify('success', `Permissions saved for "${selectedRole.value?.name}".`)
   } catch (err) {
     notify('error', errMsg(err, 'Save failed.'))
-  } finally {
-    permsSaving.value = false
   }
-}
+})
 
 function discardPermissions(): void {
   draftPerms.value = new Set(granted.value)
@@ -329,9 +330,12 @@ function toggleFolderCap(key: keyof FolderPerms): void {
   folderDirty.value = true
 }
 
+function folderKey(): string {
+  return `${selectedRoleId.value}:${selectedFolderId.value}`
+}
+
 async function saveFolderPermissions(): Promise<void> {
   if (!selectedFolderId.value || !selectedRoleId.value || !folderDraft.value) return
-  folderSaving.value = true
   try {
     const payload: Record<string, unknown> = { role_id: selectedRoleId.value }
     for (const cap of FOLDER_CAPS) payload[cap.key] = folderDraft.value[cap.key]
@@ -341,14 +345,11 @@ async function saveFolderPermissions(): Promise<void> {
     notify('success', `Folder permissions saved for "${selectedFolder.value?.name}".`)
   } catch (err) {
     notify('error', errMsg(err, 'Save failed.'))
-  } finally {
-    folderSaving.value = false
   }
 }
 
 async function resetFolderOverride(): Promise<void> {
   if (!selectedFolderId.value) return
-  folderSaving.value = true
   try {
     const payload: Record<string, unknown> = { role_id: selectedRoleId.value }
     for (const cap of FOLDER_CAPS) payload[cap.key] = false
@@ -365,14 +366,11 @@ async function resetFolderOverride(): Promise<void> {
     notify('success', 'Override removed — inheriting from parent.')
   } catch (err) {
     notify('error', errMsg(err, 'Reset failed.'))
-  } finally {
-    folderSaving.value = false
   }
 }
 
-async function createRole(): Promise<void> {
-  if (!newRoleName.value.trim() || createBusy.value) return
-  createBusy.value = true
+const createRoleAction = useAsyncAction(async (): Promise<void> => {
+  if (!newRoleName.value.trim()) return
   try {
     const resp = await axios.post('/api/access-management/roles', {
       name: newRoleName.value.trim(),
@@ -386,16 +384,12 @@ async function createRole(): Promise<void> {
     notify('success', 'Role created. Grant its permissions now.')
   } catch (err) {
     notify('error', errMsg(err, 'Create failed.'))
-  } finally {
-    createBusy.value = false
   }
-}
+})
 
-async function saveRoleEdit(): Promise<void> {
-  if (!editRole.value) return
-  busy.value = true
+async function saveRoleEdit(target: Role): Promise<void> {
   try {
-    await axios.put(`/api/access-management/roles/${editRole.value.id}`, {
+    await axios.put(`/api/access-management/roles/${target.id}`, {
       name: editRoleName.value,
       description: editRoleDesc.value || null,
       is_active: editRoleActive.value,
@@ -405,40 +399,30 @@ async function saveRoleEdit(): Promise<void> {
     notify('success', 'Role updated.')
   } catch (err) {
     notify('error', errMsg(err, 'Update failed.'))
-  } finally {
-    busy.value = false
   }
 }
 
-async function doDeleteRole(): Promise<void> {
-  if (!deleteRoleTarget.value) return
-  busy.value = true
+async function doDeleteRole(target: Role): Promise<void> {
   try {
-    await axios.delete(`/api/access-management/roles/${deleteRoleTarget.value.id}`)
-    if (selectedRoleId.value === deleteRoleTarget.value.id) selectedRoleId.value = null
+    await axios.delete(`/api/access-management/roles/${target.id}`)
+    if (selectedRoleId.value === target.id) selectedRoleId.value = null
     deleteRoleTarget.value = null
     await loadRoles()
     notify('success', 'Role deleted.')
   } catch (err) {
     notify('error', errMsg(err, 'Delete failed.'))
-  } finally {
-    busy.value = false
   }
 }
 
-async function saveUserRoles(): Promise<void> {
-  if (!editUser.value) return
-  userSaving.value = true
+async function saveUserRoles(target: AmUser): Promise<void> {
   try {
-    await axios.put(`/api/access-management/users/${editUser.value.id}/roles`, { roles: editUserRoles.value })
+    await axios.put(`/api/access-management/users/${target.id}/roles`, { roles: editUserRoles.value })
     await loadUsers()
     userRolesDirty.value = false
     editUser.value = null
     notify('success', 'User roles updated.')
   } catch (err) {
     notify('error', errMsg(err, 'Update failed.'))
-  } finally {
-    userSaving.value = false
   }
 }
 
@@ -562,16 +546,20 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
               <p v-if="selectedRole.description" class="text-xs text-slate-500">{{ selectedRole.description }}</p>
             </div>
             <div class="flex gap-2">
-              <button class="btn btn-secondary px-3 py-1.5" @click="editRole = selectedRole; editRoleName = selectedRole.name; editRoleDesc = selectedRole.description || ''; editRoleActive = !!selectedRole.is_active">
+              <button class="btn btn-secondary px-3 py-1.5" :disabled="roleOps.isBusy(selectedRole.id)" @click="editRole = selectedRole; editRoleName = selectedRole.name; editRoleDesc = selectedRole.description || ''; editRoleActive = !!selectedRole.is_active">
                 <Pencil :size="14" /> Edit
               </button>
-              <button
+              <LoadingButton
                 v-if="!selectedRole.is_system"
                 class="btn btn-secondary px-3 py-1.5 text-rose-600 hover:bg-rose-50"
+                :spinner-size="14"
+                loading-text="Deleting…"
+                :loading="roleOps.isPending(selectedRole.id, 'delete')"
+                :disabled="roleOps.isBusy(selectedRole.id)"
                 @click="deleteRoleTarget = selectedRole"
               >
                 <Trash2 :size="14" /> Delete
-              </button>
+              </LoadingButton>
             </div>
           </div>
 
@@ -603,13 +591,19 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   {{ draftPerms.size }} of {{ registry.length }} permissions granted
                 </p>
                 <div class="flex gap-2">
-                  <button v-if="permsDirty" class="btn btn-ghost px-3 py-1.5 text-xs" @click="discardPermissions">
+                  <button v-if="permsDirty" class="btn btn-ghost px-3 py-1.5 text-xs" :disabled="savePermsAction.pending" @click="discardPermissions">
                     Discard changes
                   </button>
-                  <button class="btn btn-primary px-4 py-1.5" :disabled="!permsDirty || permsSaving" @click="savePermissions">
-                    <Loader2 v-if="permsSaving" :size="14" class="animate-spin" />
+                  <LoadingButton
+                    class="btn btn-primary px-4 py-1.5"
+                    :spinner-size="14"
+                    loading-text="Saving…"
+                    :loading="savePermsAction.pending"
+                    :disabled="!permsDirty"
+                    @click="savePermsAction.run()"
+                  >
                     Save permissions
-                  </button>
+                  </LoadingButton>
                 </div>
               </div>
               <p v-if="permsDirty" class="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
@@ -718,18 +712,27 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   </div>
 
                   <div class="mt-4 flex flex-wrap gap-2">
-                    <button class="btn btn-primary px-4 py-1.5" :disabled="!folderDirty || folderSaving" @click="saveFolderPermissions">
-                      <Loader2 v-if="folderSaving" :size="14" class="animate-spin" />
+                    <LoadingButton
+                      class="btn btn-primary px-4 py-1.5"
+                      :spinner-size="14"
+                      loading-text="Saving…"
+                      :loading="folderOps.isPending(folderKey(), 'save')"
+                      :disabled="!folderDirty || folderOps.isBusy(folderKey())"
+                      @click="folderOps.run(folderKey(), 'save', saveFolderPermissions)"
+                    >
                       Save folder permissions
-                    </button>
-                    <button
+                    </LoadingButton>
+                    <LoadingButton
                       v-if="folderExplicit[selectedFolderId]"
                       class="btn btn-secondary px-4 py-1.5"
-                      :disabled="folderSaving"
-                      @click="resetFolderOverride"
+                      :spinner-size="14"
+                      loading-text="Resetting…"
+                      :loading="folderOps.isPending(folderKey(), 'reset')"
+                      :disabled="folderOps.isBusy(folderKey())"
+                      @click="folderOps.run(folderKey(), 'reset', resetFolderOverride)"
                     >
                       <RefreshCw :size="14" /> Reset to inherit
-                    </button>
+                    </LoadingButton>
                   </div>
                 </div>
               </div>
@@ -740,8 +743,8 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           <div v-if="tab === 'users'">
             <div class="mb-3 flex items-center justify-between gap-2">
               <p class="text-xs text-slate-500">Users with this role ({{ usersWithRole.length }})</p>
-              <button class="btn btn-secondary px-3 py-1.5 text-xs" @click="loadUsers()">
-                <RefreshCw :size="13" /> Refresh
+              <button class="btn btn-secondary px-3 py-1.5 text-xs" :disabled="usersLoading" :aria-busy="usersLoading ? 'true' : undefined" @click="loadUsers()">
+                <RefreshCw :size="13" :class="{ 'animate-spin': usersLoading }" /> Refresh
               </button>
             </div>
             <div v-if="usersLoading" class="flex justify-center py-8 text-slate-400">
@@ -759,17 +762,20 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   <p class="truncate text-sm font-semibold text-slate-800">{{ u.full_name }}</p>
                   <p class="truncate text-xs text-slate-400">@{{ u.username }} · {{ u.roles.join(', ') || 'no roles' }}</p>
                 </div>
-                <button class="btn btn-ghost px-2.5 py-1 text-xs" @click="editUser = u; editUserRoles = [...u.roles]; userRolesDirty = false">
+                <button class="btn btn-ghost px-2.5 py-1 text-xs" :disabled="userOps.isBusy(u.id)" @click="editUser = u; editUserRoles = [...u.roles]; userRolesDirty = false">
                   <Users :size="13" /> Roles
                 </button>
-                <button
+                <LoadingButton
                   class="btn px-2.5 py-1 text-xs"
                   :class="u.is_active ? 'btn-ghost text-amber-600' : 'btn-ghost text-emerald-600'"
-                  :disabled="u.id === authStore.state.user?.id"
-                  @click="toggleUserActive(u)"
+                  :spinner-size="13"
+                  :loading-text="u.is_active ? 'Deactivating…' : 'Activating…'"
+                  :loading="userOps.isPending(u.id, 'active')"
+                  :disabled="u.id === authStore.state.user?.id || userOps.isBusy(u.id)"
+                  @click="userOps.run(u.id, 'active', () => toggleUserActive(u))"
                 >
                   {{ u.is_active ? 'Deactivate' : 'Activate' }}
-                </button>
+                </LoadingButton>
               </li>
             </ul>
 
@@ -778,7 +784,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
               <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Assign users</p>
               <div class="relative mb-3">
                 <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" :size="15" />
-                <input v-model="usersSearch" class="input py-2 pl-9 text-sm" placeholder="Search users…" @keyup.enter="loadUsers" />
+                <input v-model="usersSearch" class="input py-2 pl-9 text-sm" placeholder="Search users…" @keyup.enter="!usersLoading && loadUsers()" />
               </div>
               <ul class="max-h-56 divide-y divide-slate-100 overflow-auto rounded-xl border border-slate-200">
                 <li v-for="u in users" :key="u.id" class="flex items-center gap-3 px-4 py-2.5 text-sm">
@@ -788,6 +794,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   <button
                     v-if="!u.roles.includes(selectedRole.name)"
                     class="btn btn-secondary px-2.5 py-1 text-xs"
+                    :disabled="userOps.isBusy(u.id)"
                     @click="editUser = u; editUserRoles = [...u.roles, selectedRole.name]; userRolesDirty = true"
                   >
                     <UserPlus :size="13" /> Assign
@@ -822,9 +829,15 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
             </p>
             <div class="flex justify-end gap-3">
               <button class="btn btn-secondary" @click="showCreateRole = false">Cancel</button>
-              <button class="btn btn-primary" :disabled="createBusy || !newRoleName.trim()" @click="createRole">
-                <Loader2 v-if="createBusy" :size="16" class="animate-spin" /> Create
-              </button>
+              <LoadingButton
+                class="btn btn-primary"
+                loading-text="Creating…"
+                :loading="createRoleAction.pending"
+                :disabled="!newRoleName.trim()"
+                @click="createRoleAction.run()"
+              >
+                Create
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -851,7 +864,15 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
             </label>
             <div class="flex justify-end gap-3">
               <button class="btn btn-secondary" @click="editRole = null">Cancel</button>
-              <button class="btn btn-primary" :disabled="busy" @click="saveRoleEdit">Save</button>
+              <LoadingButton
+                class="btn btn-primary"
+                loading-text="Saving…"
+                :loading="roleOps.isPending(editRole.id, 'edit')"
+                :disabled="roleOps.isBusy(editRole.id)"
+                @click="roleOps.run(editRole.id, 'edit', () => saveRoleEdit(editRole!))"
+              >
+                Save
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -872,7 +893,15 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           </p>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="deleteRoleTarget = null">Cancel</button>
-            <button class="btn btn-danger" :disabled="busy || deleteRoleTarget.user_count > 0" @click="doDeleteRole">Delete</button>
+            <LoadingButton
+              class="btn btn-danger"
+              loading-text="Deleting…"
+              :loading="roleOps.isPending(deleteRoleTarget.id, 'delete')"
+              :disabled="deleteRoleTarget.user_count > 0 || roleOps.isBusy(deleteRoleTarget.id)"
+              @click="roleOps.run(deleteRoleTarget.id, 'delete', () => doDeleteRole(deleteRoleTarget!))"
+            >
+              Delete
+            </LoadingButton>
           </div>
         </div>
       </div>
@@ -906,9 +935,15 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           </p>
           <div class="mt-4 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="editUser = null">Cancel</button>
-            <button class="btn btn-primary" :disabled="userSaving" @click="saveUserRoles">
-              <Loader2 v-if="userSaving" :size="16" class="animate-spin" /> Save roles
-            </button>
+            <LoadingButton
+              class="btn btn-primary"
+              loading-text="Saving…"
+              :loading="userOps.isPending(editUser.id, 'roles')"
+              :disabled="userOps.isBusy(editUser.id)"
+              @click="userOps.run(editUser.id, 'roles', () => saveUserRoles(editUser!))"
+            >
+              Save roles
+            </LoadingButton>
           </div>
         </div>
       </div>

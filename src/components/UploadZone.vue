@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { UploadCloud } from 'lucide-vue-next'
+import LoadingButton from './LoadingButton.vue'
 
+// busy: the parent is still reading the previous file — picks/drops are ignored.
+const props = withDefaults(defineProps<{ busy?: boolean }>(), { busy: false })
 const emit = defineEmits<{ (e: 'select', file: File): void }>()
 
 const input = ref<HTMLInputElement | null>(null)
@@ -20,6 +23,7 @@ function onChange(e: Event): void {
 
 function onDrop(e: DragEvent): void {
   dragging.value = false
+  if (props.busy) return
   const file = e.dataTransfer?.files?.[0]
   if (file) emit('select', file)
 }
@@ -50,7 +54,9 @@ function onDrop(e: DragEvent): void {
       Supports .xlsx and .xls — the file stays in your browser (only AWB numbers are sent to
       SiCepat via the local proxy).
     </p>
-    <button type="button" class="btn btn-secondary mt-4" @click="pick">Browse files</button>
+    <LoadingButton class="btn btn-secondary mt-4" loading-text="Reading file…" :loading="props.busy" @click="pick">
+      Browse files
+    </LoadingButton>
     <input
       ref="input"
       type="file"

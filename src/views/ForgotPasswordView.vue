@@ -2,15 +2,15 @@
 import { ref } from 'vue'
 import { KeyRound, Mail, ShieldCheck } from 'lucide-vue-next'
 import axios from 'axios'
+import LoadingButton from '../components/LoadingButton.vue'
+import { useAsyncAction } from '../composables/useAsyncAction'
 
 const email = ref('')
-const submitting = ref(false)
 const sent = ref(false)
 const error = ref('')
 
-async function submit(): Promise<void> {
-  if (submitting.value || !email.value) return
-  submitting.value = true
+const submitAction = useAsyncAction(async (): Promise<void> => {
+  if (!email.value) return
   error.value = ''
   try {
     await axios.post('/api/auth/forgot-password', { email: email.value.trim() })
@@ -18,10 +18,8 @@ async function submit(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } }
     error.value = e.response?.data?.message || 'Request failed. Try again.'
-  } finally {
-    submitting.value = false
   }
-}
+})
 </script>
 
 <template>
@@ -36,7 +34,7 @@ async function submit(): Promise<void> {
       </div>
 
       <div v-if="!sent" class="card p-6">
-        <form class="space-y-4" @submit.prevent="submit">
+        <form class="space-y-4" @submit.prevent="submitAction.run()">
           <div>
             <label class="label" for="email">Registered email</label>
             <div class="relative">
@@ -53,9 +51,14 @@ async function submit(): Promise<void> {
             </div>
           </div>
           <p v-if="error" class="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{{ error }}</p>
-          <button class="btn btn-primary w-full" type="submit" :disabled="submitting">
-            {{ submitting ? 'Sending…' : 'Send reset link' }}
-          </button>
+          <LoadingButton
+            class="btn btn-primary w-full"
+            type="submit"
+            loading-text="Sending…"
+            :loading="submitAction.pending"
+          >
+            Send reset link
+          </LoadingButton>
           <router-link class="block text-center text-sm font-medium text-indigo-600 hover:text-indigo-800" to="/login">
             Back to sign in
           </router-link>
