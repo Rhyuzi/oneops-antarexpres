@@ -10,6 +10,7 @@ import {
 } from 'lucide-vue-next'
 import { storageStore } from '../../stores/storage'
 import type { StorageFolder } from '../../lib/storageApi'
+import { t } from '../../i18n'
 
 const props = defineProps<{
   folders: StorageFolder[]
@@ -42,12 +43,12 @@ function select(folder: StorageFolder | null): void {
       @click="select(null)"
     >
       <HardDrive :size="16" class="shrink-0" />
-      <span class="truncate">All folders</span>
+      <span class="truncate">{{ t('storage.allFolders') }}</span>
     </button>
 
     <template v-if="store.state.foldersLoading && !store.state.folders.length">
       <div class="flex items-center gap-2 px-2 py-2 text-sm text-slate-400">
-        <Loader2 :size="14" class="animate-spin" /> Loading…
+        <Loader2 :size="14" class="animate-spin" /> {{ t('common.loading') }}
       </div>
     </template>
 

@@ -4,6 +4,7 @@
 import { reactive, ref, watch } from 'vue'
 import { Eye, EyeOff } from 'lucide-vue-next'
 import LoadingButton from './LoadingButton.vue'
+import { t, type MessageKey } from '../i18n'
 
 const props = defineProps<{
   submitLabel: string
@@ -16,7 +17,8 @@ const emit = defineEmits<{ (e: 'submit', password: string, confirm: string): voi
 
 const form = reactive({ password: '', confirm: '' })
 const show = reactive({ pw: false, cf: false })
-const localError = ref('')
+// A key (not text) so the message follows a language switch.
+const localError = ref<MessageKey | ''>('')
 
 watch(
   () => [form.password, form.confirm],
@@ -25,13 +27,13 @@ watch(
   }
 )
 
-function validate(): string {
+function validate(): MessageKey | '' {
   const pw = form.password
-  if (pw.length < 8) return 'Password must be at least 8 characters.'
-  if (!/[A-Z]/.test(pw)) return 'Password must contain an uppercase letter.'
-  if (!/[a-z]/.test(pw)) return 'Password must contain a lowercase letter.'
-  if (!/[0-9]/.test(pw)) return 'Password must contain a digit.'
-  if (!/[^A-Za-z0-9]/.test(pw)) return 'Password must contain a symbol.'
+  if (pw.length < 8) return 'auth.pwMinLength'
+  if (!/[A-Z]/.test(pw)) return 'auth.pwUpper'
+  if (!/[a-z]/.test(pw)) return 'auth.pwLower'
+  if (!/[0-9]/.test(pw)) return 'auth.pwDigit'
+  if (!/[^A-Za-z0-9]/.test(pw)) return 'auth.pwSymbol'
   return ''
 }
 
@@ -44,7 +46,7 @@ function onSubmit(): void {
     return
   }
   if (form.password !== form.confirm) {
-    localError.value = 'Passwords do not match.'
+    localError.value = 'auth.pwMismatch'
     return
   }
   emit('submit', form.password, form.confirm)
@@ -59,7 +61,7 @@ function onSubmit(): void {
 
     <form v-if="!props.externalMessage" class="space-y-4" @submit.prevent="onSubmit">
       <div>
-        <label class="label" for="new-password">New password</label>
+        <label class="label" for="new-password">{{ t('auth.newPassword') }}</label>
         <div class="relative">
           <input
             id="new-password"
@@ -73,6 +75,7 @@ function onSubmit(): void {
           <button
             type="button"
             class="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
+            :aria-label="show.pw ? t('common.hide') : t('common.show')"
             @click="show.pw = !show.pw"
           >
             <Eye v-if="!show.pw" :size="17" />
@@ -82,7 +85,7 @@ function onSubmit(): void {
       </div>
 
       <div>
-        <label class="label" for="confirm-password">Confirm password</label>
+        <label class="label" for="confirm-password">{{ t('auth.confirmPassword') }}</label>
         <div class="relative">
           <input
             id="confirm-password"
@@ -95,6 +98,7 @@ function onSubmit(): void {
           <button
             type="button"
             class="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
+            :aria-label="show.cf ? t('common.hide') : t('common.show')"
             @click="show.cf = !show.cf"
           >
             <Eye v-if="!show.cf" :size="17" />
@@ -104,17 +108,17 @@ function onSubmit(): void {
       </div>
 
       <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-        Minimum 8 characters with uppercase, lowercase, digit, and symbol.
+        {{ t('auth.passwordPolicyHint') }}
       </p>
 
       <p v-if="localError || props.externalError" class="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
-        {{ localError || props.externalError }}
+        {{ localError ? t(localError) : props.externalError }}
       </p>
 
       <LoadingButton
         class="btn btn-primary w-full"
         type="submit"
-        loading-text="Working…"
+        :loading-text="t('common.working')"
         :loading="props.submitting"
       >
         {{ props.submitLabel }}

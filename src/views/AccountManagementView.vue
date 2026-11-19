@@ -25,6 +25,8 @@ import axios from 'axios'
 import { authStore } from '../stores/auth'
 import LoadingButton from '../components/LoadingButton.vue'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
+import { formatDateTime, formatNumber, hasKey, t, type MessageKey } from '../i18n'
+import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
 
 interface Account {
   id: number
@@ -95,23 +97,25 @@ function notify(kind: 'success' | 'error', message: string): void {
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
-const STATUS_META: Record<string, { label: string; cls: string }> = {
-  pending_activation: { label: 'Pending activation', cls: 'bg-amber-100 text-amber-700' },
-  active: { label: 'Active', cls: 'bg-emerald-100 text-emerald-700' },
-  inactive: { label: 'Inactive', cls: 'bg-slate-200 text-slate-600' },
-  suspended: { label: 'Suspended', cls: 'bg-rose-100 text-rose-700' },
+const STATUS_CLS: Record<string, string> = {
+  pending_activation: 'bg-amber-100 text-amber-700',
+  active: 'bg-emerald-100 text-emerald-700',
+  inactive: 'bg-slate-200 text-slate-600',
+  suspended: 'bg-rose-100 text-rose-700',
 }
 
-function statusMeta(s: string) {
-  return STATUS_META[s] || { label: s, cls: 'bg-slate-100 text-slate-600' }
+function statusMeta(s: string): { label: string; cls: string } {
+  const key = `statuses.${s}`
+  return {
+    label: hasKey(key) ? t(key as MessageKey) : s,
+    cls: STATUS_CLS[s] || 'bg-slate-100 text-slate-600',
+  }
 }
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(String(iso).replace(' ', 'T') + (String(iso).includes('Z') ? '' : 'Z'))
-  return Number.isNaN(d.getTime())
-    ? String(iso)
-    : d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return Number.isNaN(d.getTime()) ? String(iso) : formatDateTime(d) // locale-aware; parsing unchanged
 }
 
 async function loadAccounts(): Promise<void> {
@@ -130,8 +134,7 @@ async function loadAccounts(): Promise<void> {
     accounts.value = resp.data.accounts
     total.value = resp.data.total
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    error.value = e.response?.data?.message || 'Could not load accounts.'
+    error.value = apiErrorMessage(err, 'accounts.loadFailed')
   } finally {
     loading.value = false
   }
@@ -179,14 +182,13 @@ const createAction = useAsyncAction(async (): Promise<void> => {
       username: createForm.value.username.trim(),
       roles: createForm.value.roles,
     })
-    notify('success', resp.data.invitationSent ? `Account created — invitation emailed to ${resp.data.account.email}.` : 'Account created.')
-    if (resp.data.warning) createWarning.value = resp.data.warning
+    notify('success', resp.data.invitationSent ? t('accounts.createdInvited', { email: resp.data.account.email }) : t('accounts.created'))
+    if (resp.data.warning) createWarning.value = resp.data.warning // raw; rendered localized
     showCreate.value = false
     createForm.value = { full_name: '', email: '', username: '', roles: [], invite: true }
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Create failed.')
+    notify('error', apiErrorMessage(err, 'accounts.createFailed'))
   }
 })
 
@@ -213,80 +215,73 @@ async function doEdit(target: Account): Promise<void> {
       full_name: editName.value,
       email: editEmail.value,
     })
-    notify('success', 'Profile updated.')
+    notify('success', t('accounts.profileUpdated'))
     editTarget.value = null
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Update failed.')
+    notify('error', apiErrorMessage(err, 'accounts.updateFailed'))
   }
 }
 
 async function doRoles(target: Account): Promise<void> {
   try {
     await axios.patch(`/api/accounts/${target.id}/roles`, { roles: rolesDraft.value })
-    notify('success', 'Roles updated.')
+    notify('success', t('accounts.rolesUpdated'))
     rolesTarget.value = null
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Update failed.')
+    notify('error', apiErrorMessage(err, 'accounts.updateFailed'))
   }
 }
 
 async function setStatus(account: Account, status: string): Promise<void> {
   try {
     await axios.patch(`/api/accounts/${account.id}/status`, { status })
-    notify('success', `${account.full_name}: ${statusMeta(status).label.toLowerCase()}.`)
+    notify('success', t('accounts.statusChanged', { name: account.full_name, status: statusMeta(status).label.toLowerCase() }))
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Status change failed.')
+    notify('error', apiErrorMessage(err, 'accounts.statusChangeFailed'))
   }
 }
 
 async function resendInvitation(account: Account): Promise<void> {
   try {
     const resp = await axios.post(`/api/accounts/${account.id}/resend-invitation`)
-    notify('success', resp.data.message)
+    notify('success', localizeMessage(resp.data.message))
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Resend failed.')
+    notify('error', apiErrorMessage(err, 'accounts.resendFailed'))
   }
 }
 
 async function revokeInvitation(account: Account): Promise<void> {
   try {
     await axios.post(`/api/accounts/${account.id}/revoke-invitation`)
-    notify('success', 'Invitation revoked.')
+    notify('success', t('accounts.invitationRevoked'))
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Revoke failed.')
+    notify('error', apiErrorMessage(err, 'accounts.revokeFailed'))
   }
 }
 
 async function triggerReset(account: Account): Promise<void> {
   try {
     const resp = await axios.post(`/api/accounts/${account.id}/reset-password`)
-    notify('success', resp.data.message)
+    notify('success', localizeMessage(resp.data.message))
     resetTarget.value = null
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Reset trigger failed.')
+    notify('error', apiErrorMessage(err, 'accounts.resetTriggerFailed'))
   }
 }
 
 async function doDelete(target: Account): Promise<void> {
   try {
     await axios.delete(`/api/accounts/${target.id}`)
-    notify('success', 'Account deleted.')
+    notify('success', t('accounts.deleted'))
     deleteTarget.value = null
     await loadAccounts()
   } catch (err: unknown) {
-    const e = err as { response?: { data?: { message?: string } } }
-    notify('error', e.response?.data?.message || 'Delete failed.')
+    notify('error', apiErrorMessage(err, 'accounts.deleteFailed'))
   }
 }
 
@@ -307,11 +302,11 @@ const selfId = computed(() => authStore.state.user?.id)
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold text-slate-900">Account Management</h1>
-        <p class="text-sm text-slate-500">User accounts, invitations &amp; lifecycle</p>
+        <h1 class="text-xl font-bold text-slate-900">{{ t('accounts.title') }}</h1>
+        <p class="text-sm text-slate-500">{{ t('accounts.subtitle') }}</p>
       </div>
       <button v-if="canCreate" class="btn btn-primary" @click="showCreate = true; createWarning = ''">
-        <UserPlus :size="16" /> New account
+        <UserPlus :size="16" /> {{ t('accounts.newAccount') }}
       </button>
     </div>
 
@@ -332,20 +327,20 @@ const selfId = computed(() => authStore.state.user?.id)
     <div class="card flex flex-wrap items-center gap-2 p-3">
       <div class="relative min-w-[200px] flex-1">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" :size="15" />
-        <input v-model="search" class="input py-2 pl-9" placeholder="Search name, email, username…" />
+        <input v-model="search" class="input py-2 pl-9" :placeholder="t('accounts.searchPlaceholder')" />
       </div>
       <select v-model="roleFilter" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-        <option value="">All roles</option>
+        <option value="">{{ t('accounts.allRoles') }}</option>
         <option v-for="r in roles" :key="r.name" :value="r.name">{{ r.name.replace(/_/g, ' ') }}</option>
       </select>
       <select v-model="statusFilter" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-        <option value="">All statuses</option>
-        <option value="pending_activation">Pending activation</option>
-        <option value="active">Active</option>
-        <option value="inactive">Inactive</option>
-        <option value="suspended">Suspended</option>
+        <option value="">{{ t('accounts.allStatuses') }}</option>
+        <option value="pending_activation">{{ t('statuses.pending_activation') }}</option>
+        <option value="active">{{ t('statuses.active') }}</option>
+        <option value="inactive">{{ t('statuses.inactive') }}</option>
+        <option value="suspended">{{ t('statuses.suspended') }}</option>
       </select>
-      <button class="btn btn-ghost px-3 py-2" title="Refresh" :disabled="loading" :aria-busy="loading ? 'true' : undefined" @click="loadAccounts">
+      <button class="btn btn-ghost px-3 py-2" :title="t('common.refresh')" :aria-label="t('common.refresh')" :disabled="loading" :aria-busy="loading ? 'true' : undefined" @click="loadAccounts">
         <RefreshCw :size="15" :class="{ 'animate-spin': loading }" />
       </button>
     </div>
@@ -358,18 +353,18 @@ const selfId = computed(() => authStore.state.user?.id)
       <p v-else-if="error" class="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">{{ error }}</p>
       <div v-else-if="!accounts.length" class="flex flex-col items-center justify-center py-14 text-center">
         <Users :size="38" class="text-slate-300" />
-        <p class="mt-3 text-sm text-slate-500">No accounts match your filters.</p>
+        <p class="mt-3 text-sm text-slate-500">{{ t('accounts.empty') }}</p>
       </div>
 
       <div v-else class="overflow-x-auto">
         <table class="w-full min-w-[860px] text-sm">
           <thead>
             <tr class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-              <th class="px-4 py-2.5 font-semibold">User</th>
-              <th class="px-4 py-2.5 font-semibold">Roles</th>
-              <th class="px-4 py-2.5 font-semibold">Status</th>
-              <th class="hidden px-4 py-2.5 font-semibold lg:table-cell">Last login</th>
-              <th class="px-4 py-2.5 font-semibold">Actions</th>
+              <th class="px-4 py-2.5 font-semibold">{{ t('accounts.colUser') }}</th>
+              <th class="px-4 py-2.5 font-semibold">{{ t('accounts.colRoles') }}</th>
+              <th class="px-4 py-2.5 font-semibold">{{ t('accounts.colStatus') }}</th>
+              <th class="hidden px-4 py-2.5 font-semibold lg:table-cell">{{ t('accounts.colLastLogin') }}</th>
+              <th class="px-4 py-2.5 font-semibold">{{ t('accounts.colActions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -386,9 +381,9 @@ const selfId = computed(() => authStore.state.user?.id)
                   <div class="min-w-0">
                     <p class="truncate font-semibold text-slate-800">
                       {{ a.full_name }}
-                      <span v-if="a.id === selfId" class="ml-1 text-xs font-medium text-indigo-500">(you)</span>
+                      <span v-if="a.id === selfId" class="ml-1 text-xs font-medium text-indigo-500">{{ t('common.you') }}</span>
                     </p>
-                    <p class="truncate text-xs text-slate-400">@{{ a.username }} · {{ a.email || 'no email' }}</p>
+                    <p class="truncate text-xs text-slate-400">@{{ a.username }} · {{ a.email || t('accounts.noEmail') }}</p>
                   </div>
                 </div>
               </td>
@@ -402,18 +397,18 @@ const selfId = computed(() => authStore.state.user?.id)
                   >
                     {{ r.replace(/_/g, ' ') }}
                   </span>
-                  <span v-if="!a.roles.length" class="text-xs text-slate-300">none</span>
+                  <span v-if="!a.roles.length" class="text-xs text-slate-300">{{ t('common.none') }}</span>
                 </div>
               </td>
               <td class="px-4 py-3">
                 <span class="chip" :class="statusMeta(a.status).cls">{{ statusMeta(a.status).label }}</span>
                 <span v-if="a.has_pending_invitation" class="mt-1 block text-[11px] text-amber-600">
-                  invitation pending
+                  {{ t('accounts.invitationPending') }}
                 </span>
               </td>
               <td class="hidden px-4 py-3 text-slate-500 lg:table-cell">
                 <p>{{ formatDate(a.last_login_at) }}</p>
-                <p class="text-xs text-slate-400">joined {{ formatDate(a.created_at) }}</p>
+                <p class="text-xs text-slate-400">{{ t('accounts.joined', { date: formatDate(a.created_at) }) }}</p>
               </td>
               <td class="px-4 py-3">
                 <div class="flex flex-wrap items-center gap-1">
@@ -421,62 +416,63 @@ const selfId = computed(() => authStore.state.user?.id)
                     <LoadingButton
                       v-if="canInvite"
                       class="btn btn-ghost px-2 py-1 text-xs"
-                      title="Resend invitation"
+                      :title="t('accounts.resendTitle')"
                       :spinner-size="13"
-                      loading-text="Sending…"
+                      :loading-text="t('common.sending')"
                       :loading="accountOps.isPending(a.id, 'resend')"
                       :disabled="accountOps.isBusy(a.id)"
                       @click="accountOps.run(a.id, 'resend', () => resendInvitation(a))"
                     >
-                      <Mail :size="13" /> Resend
+                      <Mail :size="13" /> {{ t('accounts.resend') }}
                     </LoadingButton>
                     <LoadingButton
                       v-if="canInvite"
                       class="btn btn-ghost px-2 py-1 text-xs text-rose-600"
-                      title="Revoke invitation"
+                      :title="t('accounts.revokeTitle')"
                       :spinner-size="13"
-                      loading-text="Revoking…"
+                      :loading-text="t('accounts.revoking')"
                       :loading="accountOps.isPending(a.id, 'revoke')"
                       :disabled="accountOps.isBusy(a.id)"
                       @click="accountOps.run(a.id, 'revoke', () => revokeInvitation(a))"
                     >
-                      <MailX :size="13" /> Revoke
+                      <MailX :size="13" /> {{ t('accounts.revoke') }}
                     </LoadingButton>
                   </template>
                   <template v-else>
-                    <button v-if="canEdit" class="btn btn-ghost px-2 py-1 text-xs" title="Edit profile" :disabled="accountOps.isBusy(a.id)" @click="editTarget = a; editName = a.full_name; editEmail = a.email || ''">
-                      <Pencil :size="13" /> Edit
+                    <button v-if="canEdit" class="btn btn-ghost px-2 py-1 text-xs" :title="t('accounts.editTitle')" :disabled="accountOps.isBusy(a.id)" @click="editTarget = a; editName = a.full_name; editEmail = a.email || ''">
+                      <Pencil :size="13" /> {{ t('common.edit') }}
                     </button>
-                    <button v-if="canAssign && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs" title="Change roles" :disabled="accountOps.isBusy(a.id)" @click="rolesTarget = a; rolesDraft = [...a.roles]">
-                      <ShieldCheck :size="13" /> Roles
+                    <button v-if="canAssign && a.id !== selfId" class="btn btn-ghost px-2 py-1 text-xs" :title="t('accounts.rolesTitle')" :disabled="accountOps.isBusy(a.id)" @click="rolesTarget = a; rolesDraft = [...a.roles]">
+                      <ShieldCheck :size="13" /> {{ t('accounts.roles') }}
                     </button>
                     <LoadingButton
                       v-if="canStatus && a.id !== selfId"
                       class="btn btn-ghost px-2 py-1 text-xs"
                       :class="a.status === 'active' ? 'text-amber-600' : 'text-emerald-600'"
                       :spinner-size="13"
-                      :loading-text="a.status === 'active' ? 'Deactivating…' : 'Activating…'"
+                      :loading-text="a.status === 'active' ? t('accounts.deactivating') : t('accounts.activating')"
                       :loading="accountOps.isPending(a.id, 'status')"
                       :disabled="accountOps.isBusy(a.id)"
                       @click="accountOps.run(a.id, 'status', () => setStatus(a, a.status === 'active' ? 'inactive' : 'active'))"
                     >
-                      <UserCheck :size="13" /> {{ a.status === 'active' ? 'Deactivate' : 'Activate' }}
+                      <UserCheck :size="13" /> {{ a.status === 'active' ? t('accounts.deactivate') : t('accounts.activate') }}
                     </LoadingButton>
                     <LoadingButton
                       v-if="canReset"
                       class="btn btn-ghost px-2 py-1 text-xs"
-                      title="Send password reset email"
+                      :title="t('accounts.resetTitle')"
                       :spinner-size="13"
                       :loading="accountOps.isPending(a.id, 'reset')"
                       :disabled="accountOps.isBusy(a.id)"
                       @click="resetTarget = a"
                     >
-                      <KeyRound :size="13" /> Reset
+                      <KeyRound :size="13" /> {{ t('accounts.reset') }}
                     </LoadingButton>
                     <LoadingButton
                       v-if="canDelete && a.id !== selfId"
                       class="btn btn-ghost px-2 py-1 text-xs text-rose-600"
-                      title="Delete account"
+                      :title="t('accounts.deleteTitle')"
+                      :aria-label="t('accounts.deleteTitle')"
                       :spinner-size="13"
                       :loading="accountOps.isPending(a.id, 'delete')"
                       :disabled="accountOps.isBusy(a.id)"
@@ -493,13 +489,13 @@ const selfId = computed(() => authStore.state.user?.id)
 
         <!-- Pagination -->
         <div v-if="totalPages > 1" class="mt-4 flex items-center justify-between text-sm">
-          <span class="text-slate-500">Page {{ page }} of {{ totalPages }} · {{ total }} accounts</span>
+          <span class="text-slate-500">{{ t('accounts.paginationSummary', { page: formatNumber(page), pages: formatNumber(totalPages), total: formatNumber(total) }) }}</span>
           <div class="flex gap-2">
             <button class="btn btn-secondary px-3 py-1.5" :disabled="page <= 1 || loading" @click="page--; loadAccounts()">
-              <ChevronLeft :size="14" /> Prev
+              <ChevronLeft :size="14" /> {{ t('common.prev') }}
             </button>
             <button class="btn btn-secondary px-3 py-1.5" :disabled="page >= totalPages || loading" @click="page++; loadAccounts()">
-              Next <ChevronRight :size="14" />
+              {{ t('common.next') }} <ChevronRight :size="14" />
             </button>
           </div>
         </div>
@@ -512,23 +508,23 @@ const selfId = computed(() => authStore.state.user?.id)
     <Teleport to="body">
       <div v-if="showCreate" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="showCreate = false">
         <div class="max-h-[90vh] w-full max-w-md overflow-auto rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">New account</h3>
+          <h3 class="section-title mb-4">{{ t('accounts.newAccount') }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="label" for="na-name">Full name</label>
+              <label class="label" for="na-name">{{ t('accounts.fullName') }}</label>
               <input id="na-name" v-model="createForm.full_name" class="input" maxlength="150" />
             </div>
             <div>
-              <label class="label" for="na-email">Email</label>
+              <label class="label" for="na-email">{{ t('accounts.email') }}</label>
               <input id="na-email" v-model="createForm.email" class="input" type="email" />
-              <p class="mt-1 text-xs text-slate-400">The invitation is sent here.</p>
+              <p class="mt-1 text-xs text-slate-400">{{ t('accounts.invitationSentHere') }}</p>
             </div>
             <div>
-              <label class="label" for="na-username">Username</label>
-              <input id="na-username" v-model="createForm.username" class="input" maxlength="64" placeholder="lowercase, digits, . _ -" />
+              <label class="label" for="na-username">{{ t('auth.username') }}</label>
+              <input id="na-username" v-model="createForm.username" class="input" maxlength="64" :placeholder="t('accounts.usernamePlaceholder')" />
             </div>
             <div>
-              <label class="label">Roles</label>
+              <label class="label">{{ t('accounts.colRoles') }}</label>
               <div class="space-y-2">
                 <label
                   v-for="r in roles.filter((x) => x.is_active && (isSuper || x.name !== 'super_admin'))"
@@ -547,20 +543,20 @@ const selfId = computed(() => authStore.state.user?.id)
               </div>
             </div>
             <p class="rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
-              The account is created as <strong>Pending Activation</strong> and an invitation email with an
-              activation link (valid 24 h, single-use) is sent. The user sets their own password — you never see it.
+              {{ t('accounts.createInfoBefore') }} <strong>{{ t('statuses.pending_activation') }}</strong>
+              {{ t('accounts.createInfoAfter') }}
             </p>
-            <p v-if="createWarning" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">{{ createWarning }}</p>
+            <p v-if="createWarning" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">{{ localizeMessage(createWarning) }}</p>
             <div class="flex justify-end gap-3">
-              <button class="btn btn-secondary" @click="showCreate = false">Cancel</button>
+              <button class="btn btn-secondary" @click="showCreate = false">{{ t('common.cancel') }}</button>
               <LoadingButton
                 class="btn btn-primary"
-                loading-text="Creating…"
+                :loading-text="t('common.creating')"
                 :loading="createAction.pending"
                 :disabled="!createForm.full_name || !createForm.email || !createForm.username || !createForm.roles.length"
                 @click="createAction.run()"
               >
-                Create &amp; invite
+                {{ t('accounts.createAndInvite') }}
               </LoadingButton>
             </div>
           </div>
@@ -572,26 +568,26 @@ const selfId = computed(() => authStore.state.user?.id)
     <Teleport to="body">
       <div v-if="editTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="editTarget = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">Edit profile</h3>
+          <h3 class="section-title mb-4">{{ t('accounts.editTitle') }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="label">Full name</label>
+              <label class="label">{{ t('accounts.fullName') }}</label>
               <input v-model="editName" class="input" maxlength="150" />
             </div>
             <div>
-              <label class="label">Email</label>
+              <label class="label">{{ t('accounts.email') }}</label>
               <input v-model="editEmail" class="input" type="email" />
             </div>
             <div class="flex justify-end gap-3">
-              <button class="btn btn-secondary" @click="editTarget = null">Cancel</button>
+              <button class="btn btn-secondary" @click="editTarget = null">{{ t('common.cancel') }}</button>
               <LoadingButton
                 class="btn btn-primary"
-                loading-text="Saving…"
+                :loading-text="t('common.saving')"
                 :loading="accountOps.isPending(editTarget.id, 'edit')"
                 :disabled="accountOps.isBusy(editTarget.id)"
                 @click="accountOps.run(editTarget.id, 'edit', () => doEdit(editTarget!))"
               >
-                Save
+                {{ t('common.save') }}
               </LoadingButton>
             </div>
           </div>
@@ -603,7 +599,7 @@ const selfId = computed(() => authStore.state.user?.id)
     <Teleport to="body">
       <div v-if="rolesTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="rolesTarget = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">Roles</h3>
+          <h3 class="section-title mb-1">{{ t('accounts.roles') }}</h3>
           <p class="mb-4 text-sm text-slate-500">{{ rolesTarget.full_name }} (@{{ rolesTarget.username }})</p>
           <div class="space-y-2">
             <label
@@ -622,18 +618,18 @@ const selfId = computed(() => authStore.state.user?.id)
             </label>
           </div>
           <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            You cannot change your own roles. Only Super Admins can assign super_admin.
+            {{ t('accounts.rolesDialogNote') }}
           </p>
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="rolesTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="rolesTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Saving…"
+              :loading-text="t('common.saving')"
               :loading="accountOps.isPending(rolesTarget.id, 'roles')"
               :disabled="!rolesDraft.length || accountOps.isBusy(rolesTarget.id)"
               @click="accountOps.run(rolesTarget.id, 'roles', () => doRoles(rolesTarget!))"
             >
-              Save roles
+              {{ t('accounts.saveRoles') }}
             </LoadingButton>
           </div>
         </div>
@@ -644,21 +640,21 @@ const selfId = computed(() => authStore.state.user?.id)
     <Teleport to="body">
       <div v-if="resetTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="resetTarget = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="mb-2 text-base font-semibold text-slate-900">Send password reset?</h3>
+          <h3 class="mb-2 text-base font-semibold text-slate-900">{{ t('accounts.resetConfirmTitle') }}</h3>
           <p class="text-sm text-slate-600">
-            A single-use reset link (valid 30 minutes) will be emailed to
-            <strong>{{ resetTarget.email }}</strong>. Their current password keeps working until they use it.
+            {{ t('accounts.resetConfirmBefore') }}
+            <strong>{{ resetTarget.email }}</strong>. {{ t('accounts.resetConfirmAfter') }}
           </p>
           <div class="mt-5 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="resetTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="resetTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Sending…"
+              :loading-text="t('common.sending')"
               :loading="accountOps.isPending(resetTarget.id, 'reset')"
               :disabled="accountOps.isBusy(resetTarget.id)"
               @click="accountOps.run(resetTarget.id, 'reset', () => triggerReset(resetTarget!))"
             >
-              <KeyRound :size="15" /> Send reset email
+              <KeyRound :size="15" /> {{ t('accounts.sendResetEmail') }}
             </LoadingButton>
           </div>
         </div>
@@ -669,21 +665,21 @@ const selfId = computed(() => authStore.state.user?.id)
     <Teleport to="body">
       <div v-if="deleteTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="deleteTarget = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="mb-2 text-base font-semibold text-rose-700">Delete account?</h3>
+          <h3 class="mb-2 text-base font-semibold text-rose-700">{{ t('accounts.deleteConfirmTitle') }}</h3>
           <p class="text-sm text-slate-600">
-            <strong>{{ deleteTarget.full_name }}</strong> (@{{ deleteTarget.username }}) will be permanently
-            removed, along with their role assignments. Their audit history remains.
+            <strong>{{ deleteTarget.full_name }}</strong>
+            {{ t('accounts.deleteConfirmBody', { username: deleteTarget.username }) }}
           </p>
           <div class="mt-5 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="deleteTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="deleteTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-danger"
-              loading-text="Deleting…"
+              :loading-text="t('common.deleting')"
               :loading="accountOps.isPending(deleteTarget.id, 'delete')"
               :disabled="accountOps.isBusy(deleteTarget.id)"
               @click="accountOps.run(deleteTarget.id, 'delete', () => doDelete(deleteTarget!))"
             >
-              Delete
+              {{ t('common.delete') }}
             </LoadingButton>
           </div>
         </div>
@@ -704,40 +700,40 @@ const selfId = computed(() => authStore.state.user?.id)
                 <p class="text-sm text-slate-400">@{{ detail.username }}</p>
               </div>
             </div>
-            <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="detail = null">
+            <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" :aria-label="t('common.close')" @click="detail = null">
               <X :size="18" />
             </button>
           </div>
 
           <dl class="space-y-3 text-sm">
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Email</dt>
+              <dt class="text-slate-500">{{ t('accounts.email') }}</dt>
               <dd class="text-right text-slate-800">{{ detail.email || '—' }}</dd>
             </div>
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Status</dt>
+              <dt class="text-slate-500">{{ t('accounts.colStatus') }}</dt>
               <dd><span class="chip" :class="statusMeta(detail.status).cls">{{ statusMeta(detail.status).label }}</span></dd>
             </div>
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Roles</dt>
+              <dt class="text-slate-500">{{ t('accounts.colRoles') }}</dt>
               <dd class="text-right capitalize text-slate-800">{{ detail.roles.join(', ').replace(/_/g, ' ') || '—' }}</dd>
             </div>
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Created</dt>
+              <dt class="text-slate-500">{{ t('accounts.detailCreated') }}</dt>
               <dd class="text-slate-800">{{ formatDate(detail.created_at) }}</dd>
             </div>
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Activated</dt>
+              <dt class="text-slate-500">{{ t('accounts.detailActivated') }}</dt>
               <dd class="text-slate-800">{{ formatDate(detail.activated_at) }}</dd>
             </div>
             <div class="flex justify-between gap-4">
-              <dt class="text-slate-500">Last login</dt>
+              <dt class="text-slate-500">{{ t('accounts.colLastLogin') }}</dt>
               <dd class="text-slate-800">{{ formatDate(detail.last_login_at) }}</dd>
             </div>
           </dl>
 
           <p class="mt-6 flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
-            <Clock :size="13" /> Invitation {{ detail.has_pending_invitation ? 'pending — link still valid' : 'not pending' }}
+            <Clock :size="13" /> {{ detail.has_pending_invitation ? t('accounts.invitationStillValid') : t('accounts.invitationNotPending') }}
           </p>
         </div>
       </div>

@@ -91,6 +91,8 @@ export const authStore = {
       state.checked = true
       return true
     } catch (err: unknown) {
+      // Raw server text (or the English fallback); views render it via
+      // localizeMessage() so it follows the selected language.
       const e = err as { response?: { data?: { message?: string } } }
       state.error = e.response?.data?.message || 'Login failed.'
       return false

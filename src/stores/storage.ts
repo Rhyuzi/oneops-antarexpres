@@ -14,6 +14,8 @@ import {
   FilesResponse,
   UploadProgressItem,
 } from '../lib/storageApi'
+import { t } from '../i18n'
+import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
 
 interface Toast {
   id: number
@@ -176,11 +178,10 @@ export const storageStore = {
       const folder = await createFolder({ name, description, parentId })
       await this.refreshFolders()
       if (parentId) state.expanded.add(parentId)
-      this.toast('success', `Folder "${name}" created.`)
+      this.toast('success', t('storage.folderCreated', { name }))
       return folder
     } catch (err) {
-      const e = err as { response?: { data?: { message?: string } } }
-      this.toast('error', e.response?.data?.message || 'Could not create folder.')
+      this.toast('error', apiErrorMessage(err, 'storage.createFolderFailed'))
       return null
     }
   },
@@ -190,11 +191,10 @@ export const storageStore = {
       await updateFolder(id, { name })
       await this.refreshFolders()
       await this.refreshFiles()
-      this.toast('success', 'Folder renamed.')
+      this.toast('success', t('storage.folderRenamed'))
       return true
     } catch (err) {
-      const e = err as { response?: { data?: { message?: string } } }
-      this.toast('error', e.response?.data?.message || 'Rename failed.')
+      this.toast('error', apiErrorMessage(err, 'storage.renameFailed'))
       return false
     }
   },
@@ -203,11 +203,10 @@ export const storageStore = {
     try {
       await updateFolder(id, { parentId })
       await this.refreshFolders()
-      this.toast('success', 'Folder moved.')
+      this.toast('success', t('storage.folderMoved'))
       return true
     } catch (err) {
-      const e = err as { response?: { data?: { message?: string } } }
-      this.toast('error', e.response?.data?.message || 'Move failed.')
+      this.toast('error', apiErrorMessage(err, 'storage.moveFailed'))
       return false
     }
   },
@@ -217,11 +216,10 @@ export const storageStore = {
       await deleteFolder(id)
       if (state.currentFolderId === id) await this.navigateTo('root')
       else await Promise.all([this.refreshFolders(), this.refreshFiles()])
-      this.toast('success', 'Folder deleted.')
+      this.toast('success', t('storage.folderDeleted'))
       return true
     } catch (err) {
-      const e = err as { response?: { data?: { message?: string } } }
-      this.toast('error', e.response?.data?.message || 'Delete failed.')
+      this.toast('error', apiErrorMessage(err, 'storage.deleteFailed'))
       return false
     }
   },
@@ -275,14 +273,14 @@ export const storageStore = {
   // -- upload flow ------------------------------------------------------------
   async uploadFiles(files: File[]): Promise<void> {
     if (isRoot(state.currentFolderId)) {
-      this.toast('error', 'Select a folder first — files cannot be uploaded to the root.')
+      this.toast('error', t('storage.selectFolderFirst'))
       return
     }
     const folderId = Number(state.currentFolderId)
 
     const accepted = files.filter((file) => !uploadsInFlight.has(uploadKey(folderId, file)))
     if (accepted.length < files.length) {
-      this.toast('error', 'Skipped file(s) that are already uploading.')
+      this.toast('error', t('storage.skippedDuplicates'))
     }
     if (!accepted.length) return
     accepted.forEach((file) => uploadsInFlight.add(uploadKey(folderId, file)))
@@ -319,12 +317,12 @@ export const storageStore = {
           const idx = state.uploads.findIndex((u) => u.id === itemId)
           if (idx >= 0) state.uploads.splice(idx, 1)
         }, 1500)
-        this.toast('success', `"${file.name}" uploaded.`)
+        this.toast('success', t('storage.fileUploaded', { name: file.name }))
       } catch (err) {
         const e = err as { response?: { data?: { message?: string } }; message?: string }
         item.status = 'error'
         item.error = e.response?.data?.message || e.message || 'Upload failed.'
-        this.toast('error', `"${file.name}": ${item.error}`)
+        this.toast('error', t('storage.fileUploadError', { name: file.name, error: localizeMessage(item.error) }))
         window.setTimeout(() => {
           const idx = state.uploads.findIndex((u) => u.id === itemId)
           if (idx >= 0) state.uploads.splice(idx, 1)

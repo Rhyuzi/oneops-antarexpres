@@ -22,6 +22,8 @@ import axios from 'axios'
 import { authStore } from '../stores/auth'
 import LoadingButton from '../components/LoadingButton.vue'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
+import { formatNumber, hasKey, t, tn, type MessageKey } from '../i18n'
+import { apiErrorMessage, localizeRoleDescription } from '../i18n/systemMessages'
 
 // --- types -----------------------------------------------------------------
 interface Role {
@@ -71,17 +73,38 @@ interface FolderPerms {
   can_manage_permissions: boolean
 }
 
-const FOLDER_CAPS: Array<{ key: keyof FolderPerms; label: string }> = [
-  { key: 'can_view', label: 'View' },
-  { key: 'can_create_folder', label: 'Create folder' },
-  { key: 'can_upload', label: 'Upload' },
-  { key: 'can_download', label: 'Download' },
-  { key: 'can_preview', label: 'Preview' },
-  { key: 'can_rename', label: 'Rename' },
-  { key: 'can_move', label: 'Move' },
-  { key: 'can_delete', label: 'Delete' },
-  { key: 'can_manage_permissions', label: 'Manage' },
+const FOLDER_CAPS: Array<{ key: keyof FolderPerms; label: MessageKey }> = [
+  { key: 'can_view', label: 'caps.can_view' },
+  { key: 'can_create_folder', label: 'caps.can_create_folder' },
+  { key: 'can_upload', label: 'caps.can_upload' },
+  { key: 'can_download', label: 'caps.can_download' },
+  { key: 'can_preview', label: 'caps.can_preview' },
+  { key: 'can_rename', label: 'caps.can_rename' },
+  { key: 'can_move', label: 'caps.can_move' },
+  { key: 'can_delete', label: 'caps.can_delete' },
+  { key: 'can_manage_permissions', label: 'caps.can_manage_permissions' },
 ]
+
+const TABS: Array<{ key: 'modules' | 'folders' | 'users'; label: MessageKey }> = [
+  { key: 'modules', label: 'access.tabModules' },
+  { key: 'folders', label: 'access.tabFolders' },
+  { key: 'users', label: 'access.tabUsers' },
+]
+
+// Registry labels are system-defined: translate by permission key / module /
+// action, falling back to the server's English text for unknown entries.
+function permText(perm: RegistryPermission, field: 'feature' | 'description'): string {
+  const key = `permissions.keys.${perm.key}.${field}`
+  return hasKey(key) ? t(key) : perm[field]
+}
+function moduleText(module: string, fallback: string): string {
+  const key = `permissions.modules.${module}`
+  return hasKey(key) ? t(key) : fallback
+}
+function actionText(action: string): string {
+  const key = `permissions.actions.${action}`
+  return hasKey(key) ? t(key) : action
+}
 
 // --- state -----------------------------------------------------------------
 const roles = ref<Role[]>([])
@@ -185,7 +208,7 @@ async function loadRoles(): Promise<void> {
       selectedRoleId.value = roles.value[0].id
     }
   } catch (err) {
-    notify('error', errMsg(err, 'Could not load roles.'))
+    notify('error', errMsg(err, 'access.loadRolesFailed'))
   } finally {
     rolesLoading.value = false
   }
@@ -201,7 +224,7 @@ async function loadRolePermissions(): Promise<void> {
     granted.value = new Set(resp.data.permissions)
     draftPerms.value = new Set(resp.data.permissions)
   } catch (err) {
-    notify('error', errMsg(err, 'Could not load permissions.'))
+    notify('error', errMsg(err, 'access.loadPermissionsFailed'))
   } finally {
     permsLoading.value = false
   }
@@ -221,7 +244,7 @@ async function loadFolders(): Promise<void> {
       folderExplicit.value = detail.data.permissions || {}
     }
   } catch (err) {
-    notify('error', errMsg(err, 'Could not load folders.'))
+    notify('error', errMsg(err, 'access.loadFoldersFailed'))
   }
 }
 
@@ -241,7 +264,7 @@ async function loadUsers(): Promise<void> {
     const resp = await axios.get('/api/access-management/users', { params: { search: usersSearch.value } })
     users.value = resp.data.users
   } catch (err) {
-    notify('error', errMsg(err, 'Could not load users.'))
+    notify('error', errMsg(err, 'access.loadUsersFailed'))
   } finally {
     usersLoading.value = false
   }
@@ -313,9 +336,9 @@ const savePermsAction = useAsyncAction(async (): Promise<void> => {
     granted.value = new Set(draftPerms.value)
     permsDirty.value = false
     await loadRoles()
-    notify('success', `Permissions saved for "${selectedRole.value?.name}".`)
+    notify('success', t('access.permissionsSaved', { role: selectedRole.value?.name ?? '' }))
   } catch (err) {
-    notify('error', errMsg(err, 'Save failed.'))
+    notify('error', errMsg(err, 'access.saveFailed'))
   }
 })
 
@@ -342,9 +365,9 @@ async function saveFolderPermissions(): Promise<void> {
     await axios.put(`/api/storage/folders/${selectedFolderId.value}/permissions`, { permissions: [payload] })
     folderExplicit.value = { ...folderExplicit.value, [selectedFolderId.value]: { ...folderDraft.value } }
     folderDirty.value = false
-    notify('success', `Folder permissions saved for "${selectedFolder.value?.name}".`)
+    notify('success', t('access.folderPermissionsSaved', { folder: selectedFolder.value?.name ?? '' }))
   } catch (err) {
-    notify('error', errMsg(err, 'Save failed.'))
+    notify('error', errMsg(err, 'access.saveFailed'))
   }
 }
 
@@ -363,9 +386,9 @@ async function resetFolderOverride(): Promise<void> {
       ...inherited,
     }
     folderDirty.value = false
-    notify('success', 'Override removed — inheriting from parent.')
+    notify('success', t('access.overrideRemoved'))
   } catch (err) {
-    notify('error', errMsg(err, 'Reset failed.'))
+    notify('error', errMsg(err, 'access.resetFailed'))
   }
 }
 
@@ -381,9 +404,9 @@ const createRoleAction = useAsyncAction(async (): Promise<void> => {
     newRoleDesc.value = ''
     await loadRoles()
     selectedRoleId.value = resp.data.role.id
-    notify('success', 'Role created. Grant its permissions now.')
+    notify('success', t('access.roleCreated'))
   } catch (err) {
-    notify('error', errMsg(err, 'Create failed.'))
+    notify('error', errMsg(err, 'access.createFailed'))
   }
 })
 
@@ -396,9 +419,9 @@ async function saveRoleEdit(target: Role): Promise<void> {
     })
     editRole.value = null
     await loadRoles()
-    notify('success', 'Role updated.')
+    notify('success', t('access.roleUpdated'))
   } catch (err) {
-    notify('error', errMsg(err, 'Update failed.'))
+    notify('error', errMsg(err, 'access.updateFailed'))
   }
 }
 
@@ -408,9 +431,9 @@ async function doDeleteRole(target: Role): Promise<void> {
     if (selectedRoleId.value === target.id) selectedRoleId.value = null
     deleteRoleTarget.value = null
     await loadRoles()
-    notify('success', 'Role deleted.')
+    notify('success', t('access.roleDeleted'))
   } catch (err) {
-    notify('error', errMsg(err, 'Delete failed.'))
+    notify('error', errMsg(err, 'access.deleteFailed'))
   }
 }
 
@@ -420,9 +443,9 @@ async function saveUserRoles(target: AmUser): Promise<void> {
     await loadUsers()
     userRolesDirty.value = false
     editUser.value = null
-    notify('success', 'User roles updated.')
+    notify('success', t('access.userRolesUpdated'))
   } catch (err) {
-    notify('error', errMsg(err, 'Update failed.'))
+    notify('error', errMsg(err, 'access.updateFailed'))
   }
 }
 
@@ -430,9 +453,9 @@ async function toggleUserActive(user: AmUser): Promise<void> {
   try {
     await axios.put(`/api/access-management/users/${user.id}/active`, { is_active: !user.is_active })
     await loadUsers()
-    notify('success', user.is_active ? 'User deactivated.' : 'User activated.')
+    notify('success', user.is_active ? t('access.userDeactivated') : t('access.userActivated'))
   } catch (err) {
-    notify('error', errMsg(err, 'Update failed.'))
+    notify('error', errMsg(err, 'access.updateFailed'))
   }
 }
 
@@ -452,9 +475,8 @@ function foldersExpandedToggle(module: string): void {
   else modulesExpanded.value.add(module)
 }
 
-function errMsg(err: unknown, fallback: string): string {
-  const e = err as { response?: { data?: { message?: string } } }
-  return e.response?.data?.message || fallback
+function errMsg(err: unknown, fallback: MessageKey): string {
+  return apiErrorMessage(err, fallback)
 }
 
 function beforeUnloadGuard(e: BeforeUnloadEvent): void {
@@ -471,11 +493,11 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
     <!-- Header -->
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold text-slate-900">Roles &amp; Permissions</h1>
-        <p class="text-sm text-slate-500">Centralized access control</p>
+        <h1 class="text-xl font-bold text-slate-900">{{ t('access.title') }}</h1>
+        <p class="text-sm text-slate-500">{{ t('access.subtitle') }}</p>
       </div>
       <button class="btn btn-primary" @click="showCreateRole = true">
-        <Plus :size="16" /> New role
+        <Plus :size="16" /> {{ t('access.newRole') }}
       </button>
     </div>
 
@@ -497,7 +519,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
       <aside class="w-full shrink-0 lg:w-72">
         <div class="card p-3">
           <p class="mb-2 px-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Roles ({{ roles.length }})
+            {{ t('access.rolesCount', { count: formatNumber(roles.length) }) }}
           </p>
           <div v-if="rolesLoading" class="flex justify-center py-6 text-slate-400">
             <Loader2 :size="22" class="animate-spin" />
@@ -517,9 +539,9 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                 <div class="min-w-0 flex-1">
                   <p class="truncate font-semibold capitalize">{{ role.name.replace(/_/g, ' ') }}</p>
                   <p class="text-xs text-slate-400">
-                    {{ role.user_count }} user{{ role.user_count === 1 ? '' : 's' }} ·
-                    {{ role.permission_count }} perm{{ role.permission_count === 1 ? '' : 's' }}
-                    <span v-if="!role.is_active" class="font-semibold text-rose-400">· inactive</span>
+                    {{ tn(role.user_count, 'access.usersOne', 'access.usersOther') }} ·
+                    {{ tn(role.permission_count, 'access.permsOne', 'access.permsOther') }}
+                    <span v-if="!role.is_active" class="font-semibold text-rose-400">· {{ t('access.inactive') }}</span>
                   </p>
                 </div>
               </button>
@@ -531,7 +553,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
       <!-- Right: detail panel -->
       <div class="min-w-0 flex-1">
         <div v-if="!selectedRole" class="card flex items-center justify-center p-16 text-sm text-slate-400">
-          Select a role to configure its permissions.
+          {{ t('access.selectRole') }}
         </div>
 
         <div v-else class="card p-4 sm:p-5">
@@ -540,25 +562,25 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
             <div>
               <h2 class="flex items-center gap-2 text-base font-bold capitalize text-slate-900">
                 {{ selectedRole.name.replace(/_/g, ' ') }}
-                <span v-if="selectedRole.is_system" class="chip bg-amber-100 text-amber-700">system</span>
-                <span v-if="!selectedRole.is_active" class="chip bg-rose-100 text-rose-700">inactive</span>
+                <span v-if="selectedRole.is_system" class="chip bg-amber-100 text-amber-700">{{ t('access.system') }}</span>
+                <span v-if="!selectedRole.is_active" class="chip bg-rose-100 text-rose-700">{{ t('access.inactive') }}</span>
               </h2>
-              <p v-if="selectedRole.description" class="text-xs text-slate-500">{{ selectedRole.description }}</p>
+              <p v-if="selectedRole.description" class="text-xs text-slate-500">{{ localizeRoleDescription(selectedRole.description) }}</p>
             </div>
             <div class="flex gap-2">
               <button class="btn btn-secondary px-3 py-1.5" :disabled="roleOps.isBusy(selectedRole.id)" @click="editRole = selectedRole; editRoleName = selectedRole.name; editRoleDesc = selectedRole.description || ''; editRoleActive = !!selectedRole.is_active">
-                <Pencil :size="14" /> Edit
+                <Pencil :size="14" /> {{ t('common.edit') }}
               </button>
               <LoadingButton
                 v-if="!selectedRole.is_system"
                 class="btn btn-secondary px-3 py-1.5 text-rose-600 hover:bg-rose-50"
                 :spinner-size="14"
-                loading-text="Deleting…"
+                :loading-text="t('common.deleting')"
                 :loading="roleOps.isPending(selectedRole.id, 'delete')"
                 :disabled="roleOps.isBusy(selectedRole.id)"
                 @click="deleteRoleTarget = selectedRole"
               >
-                <Trash2 :size="14" /> Delete
+                <Trash2 :size="14" /> {{ t('common.delete') }}
               </LoadingButton>
             </div>
           </div>
@@ -566,21 +588,20 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           <!-- Tabs -->
           <div class="mb-4 flex gap-1 border-b border-slate-200">
             <button
-              v-for="t in ['modules', 'folders', 'users'] as const"
-              :key="t"
+              v-for="tabItem in TABS"
+              :key="tabItem.key"
               class="-mb-px border-b-2 px-4 py-2.5 text-sm font-semibold transition"
-              :class="tab === t ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'"
-              @click="tab = t"
+              :class="tab === tabItem.key ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'"
+              @click="tab = tabItem.key"
             >
-              {{ t === 'modules' ? 'Module Permissions' : t === 'folders' ? 'Folder Permissions' : 'Assigned Users' }}
+              {{ t(tabItem.label) }}
             </button>
           </div>
 
           <!-- TAB: module permissions -->
           <div v-if="tab === 'modules'">
             <div v-if="isSuperAdminRole" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
-              <strong>super_admin</strong> always has every permission (hard-coded system rule) and cannot
-              be edited here.
+              <strong>super_admin</strong> {{ t('access.superAdminNoteAfter') }}
             </div>
             <div v-else-if="permsLoading" class="flex justify-center py-10 text-slate-400">
               <Loader2 :size="24" class="animate-spin" />
@@ -588,33 +609,33 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
             <div v-else>
               <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <p class="text-xs text-slate-500">
-                  {{ draftPerms.size }} of {{ registry.length }} permissions granted
+                  {{ t('access.grantedSummary', { granted: formatNumber(draftPerms.size), total: formatNumber(registry.length) }) }}
                 </p>
                 <div class="flex gap-2">
                   <button v-if="permsDirty" class="btn btn-ghost px-3 py-1.5 text-xs" :disabled="savePermsAction.pending" @click="discardPermissions">
-                    Discard changes
+                    {{ t('access.discardChanges') }}
                   </button>
                   <LoadingButton
                     class="btn btn-primary px-4 py-1.5"
                     :spinner-size="14"
-                    loading-text="Saving…"
+                    :loading-text="t('common.saving')"
                     :loading="savePermsAction.pending"
                     :disabled="!permsDirty"
                     @click="savePermsAction.run()"
                   >
-                    Save permissions
+                    {{ t('access.savePermissions') }}
                   </LoadingButton>
                 </div>
               </div>
               <p v-if="permsDirty" class="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                Unsaved changes — save or discard before switching roles.
+                {{ t('access.unsavedChanges') }}
               </p>
 
               <div v-for="mod in modules" :key="mod.module" class="mb-3 overflow-hidden rounded-xl border border-slate-200">
                 <div class="flex items-center justify-between bg-slate-50 px-4 py-2.5">
                   <button class="flex items-center gap-2 text-sm font-bold text-slate-700" @click="foldersExpandedToggle(mod.module)">
                     <component :is="moduleExpanded(mod.module) ? ChevronDown : ChevronRight" :size="15" />
-                    {{ mod.label }}
+                    {{ moduleText(mod.module, mod.label) }}
                   </button>
                   <label class="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-500">
                     <input
@@ -623,7 +644,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                       :checked="moduleAllChecked(mod.module)"
                       @change="toggleModuleAll(mod.module)"
                     />
-                    All
+                    {{ t('common.all') }}
                   </label>
                 </div>
                 <div v-if="moduleExpanded(mod.module)">
@@ -639,10 +660,10 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                       @change="togglePerm(perm.key)"
                     />
                     <div class="min-w-0 flex-1">
-                      <p class="text-sm font-medium text-slate-800">{{ perm.feature }}</p>
-                      <p class="text-xs text-slate-400">{{ perm.description }}</p>
+                      <p class="text-sm font-medium text-slate-800">{{ permText(perm, 'feature') }}</p>
+                      <p class="text-xs text-slate-400">{{ permText(perm, 'description') }}</p>
                     </div>
-                    <span class="chip shrink-0 bg-slate-100 text-slate-500">{{ perm.action }}</span>
+                    <span class="chip shrink-0 bg-slate-100 text-slate-500">{{ actionText(perm.action) }}</span>
                   </label>
                 </div>
               </div>
@@ -652,14 +673,12 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           <!-- TAB: folder permissions -->
           <div v-if="tab === 'folders'">
             <p class="mb-3 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
-              Folder permissions layer on top of module permissions — a role with Data Warrior access
-              still needs folder permission to see specific folders. Overrides apply to the folder and
-              everything under it until a nearer override.
+              {{ t('access.folderInfo') }}
             </p>
             <div class="flex flex-col gap-4 sm:flex-row">
               <!-- Folder tree -->
               <div class="w-full overflow-auto rounded-xl border border-slate-200 p-2 sm:max-h-[420px] sm:w-64">
-                <p class="px-2 py-1 text-xs font-bold uppercase tracking-wide text-slate-400">Folders</p>
+                <p class="px-2 py-1 text-xs font-bold uppercase tracking-wide text-slate-400">{{ t('access.folders') }}</p>
                 <button
                   v-for="f in rootFolders"
                   :key="f.id"
@@ -673,7 +692,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   >
                     <Folder :size="15" class="shrink-0 text-amber-500" />
                     <span class="truncate">{{ f.name }}</span>
-                    <span v-if="folderExplicit[f.id]" class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" title="Explicit override" />
+                    <span v-if="folderExplicit[f.id]" class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" :title="t('access.explicitOverrideTitle')" />
                   </div>
                 </button>
               </div>
@@ -681,7 +700,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
               <!-- Folder detail -->
               <div class="min-w-0 flex-1">
                 <div v-if="!selectedFolderId" class="py-12 text-center text-sm text-slate-400">
-                  Select a folder to configure "{{ selectedRole.name }}" permissions.
+                  {{ t('access.selectFolder', { role: selectedRole.name }) }}
                 </div>
                 <div v-else-if="!folderDraft">
                   <Loader2 :size="22" class="mx-auto animate-spin text-slate-400" />
@@ -690,8 +709,8 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                   <div class="mb-3 flex items-center gap-2">
                     <FolderOpen :size="18" class="text-amber-500" />
                     <p class="font-semibold text-slate-800">{{ selectedFolder?.name }}</p>
-                    <span v-if="folderExplicit[selectedFolderId]" class="chip bg-indigo-100 text-indigo-700">explicit override</span>
-                    <span v-else class="chip bg-slate-100 text-slate-500">inheriting</span>
+                    <span v-if="folderExplicit[selectedFolderId]" class="chip bg-indigo-100 text-indigo-700">{{ t('access.explicitOverride') }}</span>
+                    <span v-else class="chip bg-slate-100 text-slate-500">{{ t('access.inheriting') }}</span>
                   </div>
 
                   <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -707,7 +726,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                         :checked="folderDraft[cap.key]"
                         @change="toggleFolderCap(cap.key)"
                       />
-                      {{ cap.label }}
+                      {{ t(cap.label) }}
                     </label>
                   </div>
 
@@ -715,23 +734,23 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                     <LoadingButton
                       class="btn btn-primary px-4 py-1.5"
                       :spinner-size="14"
-                      loading-text="Saving…"
+                      :loading-text="t('common.saving')"
                       :loading="folderOps.isPending(folderKey(), 'save')"
                       :disabled="!folderDirty || folderOps.isBusy(folderKey())"
                       @click="folderOps.run(folderKey(), 'save', saveFolderPermissions)"
                     >
-                      Save folder permissions
+                      {{ t('access.saveFolderPermissions') }}
                     </LoadingButton>
                     <LoadingButton
                       v-if="folderExplicit[selectedFolderId]"
                       class="btn btn-secondary px-4 py-1.5"
                       :spinner-size="14"
-                      loading-text="Resetting…"
+                      :loading-text="t('common.resetting')"
                       :loading="folderOps.isPending(folderKey(), 'reset')"
                       :disabled="folderOps.isBusy(folderKey())"
                       @click="folderOps.run(folderKey(), 'reset', resetFolderOverride)"
                     >
-                      <RefreshCw :size="14" /> Reset to inherit
+                      <RefreshCw :size="14" /> {{ t('access.resetToInherit') }}
                     </LoadingButton>
                   </div>
                 </div>
@@ -742,16 +761,16 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
           <!-- TAB: assigned users -->
           <div v-if="tab === 'users'">
             <div class="mb-3 flex items-center justify-between gap-2">
-              <p class="text-xs text-slate-500">Users with this role ({{ usersWithRole.length }})</p>
+              <p class="text-xs text-slate-500">{{ t('access.usersWithRole', { count: formatNumber(usersWithRole.length) }) }}</p>
               <button class="btn btn-secondary px-3 py-1.5 text-xs" :disabled="usersLoading" :aria-busy="usersLoading ? 'true' : undefined" @click="loadUsers()">
-                <RefreshCw :size="13" :class="{ 'animate-spin': usersLoading }" /> Refresh
+                <RefreshCw :size="13" :class="{ 'animate-spin': usersLoading }" /> {{ t('common.refresh') }}
               </button>
             </div>
             <div v-if="usersLoading" class="flex justify-center py-8 text-slate-400">
               <Loader2 :size="22" class="animate-spin" />
             </div>
             <div v-else-if="!usersWithRole.length" class="py-8 text-center text-sm text-slate-400">
-              No users assigned to this role.
+              {{ t('access.noUsersWithRole') }}
             </div>
             <ul v-else class="divide-y divide-slate-100 rounded-xl border border-slate-200">
               <li v-for="u in usersWithRole" :key="u.id" class="flex items-center gap-3 px-4 py-3">
@@ -760,31 +779,31 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                 </div>
                 <div class="min-w-0 flex-1">
                   <p class="truncate text-sm font-semibold text-slate-800">{{ u.full_name }}</p>
-                  <p class="truncate text-xs text-slate-400">@{{ u.username }} · {{ u.roles.join(', ') || 'no roles' }}</p>
+                  <p class="truncate text-xs text-slate-400">@{{ u.username }} · {{ u.roles.join(', ') || t('access.noRoles') }}</p>
                 </div>
                 <button class="btn btn-ghost px-2.5 py-1 text-xs" :disabled="userOps.isBusy(u.id)" @click="editUser = u; editUserRoles = [...u.roles]; userRolesDirty = false">
-                  <Users :size="13" /> Roles
+                  <Users :size="13" /> {{ t('accounts.roles') }}
                 </button>
                 <LoadingButton
                   class="btn px-2.5 py-1 text-xs"
                   :class="u.is_active ? 'btn-ghost text-amber-600' : 'btn-ghost text-emerald-600'"
                   :spinner-size="13"
-                  :loading-text="u.is_active ? 'Deactivating…' : 'Activating…'"
+                  :loading-text="u.is_active ? t('accounts.deactivating') : t('accounts.activating')"
                   :loading="userOps.isPending(u.id, 'active')"
                   :disabled="u.id === authStore.state.user?.id || userOps.isBusy(u.id)"
                   @click="userOps.run(u.id, 'active', () => toggleUserActive(u))"
                 >
-                  {{ u.is_active ? 'Deactivate' : 'Activate' }}
+                  {{ u.is_active ? t('accounts.deactivate') : t('accounts.activate') }}
                 </LoadingButton>
               </li>
             </ul>
 
             <!-- All users quick search for assignment -->
             <div class="mt-5 border-t border-slate-100 pt-4">
-              <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Assign users</p>
+              <p class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">{{ t('access.assignUsers') }}</p>
               <div class="relative mb-3">
                 <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" :size="15" />
-                <input v-model="usersSearch" class="input py-2 pl-9 text-sm" placeholder="Search users…" @keyup.enter="!usersLoading && loadUsers()" />
+                <input v-model="usersSearch" class="input py-2 pl-9 text-sm" :placeholder="t('access.searchUsers')" @keyup.enter="!usersLoading && loadUsers()" />
               </div>
               <ul class="max-h-56 divide-y divide-slate-100 overflow-auto rounded-xl border border-slate-200">
                 <li v-for="u in users" :key="u.id" class="flex items-center gap-3 px-4 py-2.5 text-sm">
@@ -797,9 +816,9 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
                     :disabled="userOps.isBusy(u.id)"
                     @click="editUser = u; editUserRoles = [...u.roles, selectedRole.name]; userRolesDirty = true"
                   >
-                    <UserPlus :size="13" /> Assign
+                    <UserPlus :size="13" /> {{ t('access.assign') }}
                   </button>
-                  <span v-else class="text-xs font-semibold text-emerald-600">has role</span>
+                  <span v-else class="text-xs font-semibold text-emerald-600">{{ t('access.hasRole') }}</span>
                 </li>
               </ul>
             </div>
@@ -813,30 +832,30 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
     <Teleport to="body">
       <div v-if="showCreateRole" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="showCreateRole = false">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">New role</h3>
+          <h3 class="section-title mb-4">{{ t('access.newRole') }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="label" for="role-name">Role name</label>
-              <input id="role-name" v-model="newRoleName" class="input" placeholder="e.g. warehouse_team" maxlength="49" autofocus />
-              <p class="mt-1 text-xs text-slate-400">Lowercase letters, digits, underscores. Starts with a letter.</p>
+              <label class="label" for="role-name">{{ t('access.roleName') }}</label>
+              <input id="role-name" v-model="newRoleName" class="input" :placeholder="t('access.roleNamePlaceholder')" maxlength="49" autofocus />
+              <p class="mt-1 text-xs text-slate-400">{{ t('access.roleNameHint') }}</p>
             </div>
             <div>
-              <label class="label" for="role-desc">Description (optional)</label>
+              <label class="label" for="role-desc">{{ t('access.descriptionOptional') }}</label>
               <input id="role-desc" v-model="newRoleDesc" class="input" maxlength="200" />
             </div>
             <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              New roles start with <strong>no permissions</strong>. Grant them after creating.
+              {{ t('access.newRoleNoteBefore') }} <strong>{{ t('access.newRoleNoteStrong') }}</strong>{{ t('access.newRoleNoteAfter') }}
             </p>
             <div class="flex justify-end gap-3">
-              <button class="btn btn-secondary" @click="showCreateRole = false">Cancel</button>
+              <button class="btn btn-secondary" @click="showCreateRole = false">{{ t('common.cancel') }}</button>
               <LoadingButton
                 class="btn btn-primary"
-                loading-text="Creating…"
+                :loading-text="t('common.creating')"
                 :loading="createRoleAction.pending"
                 :disabled="!newRoleName.trim()"
                 @click="createRoleAction.run()"
               >
-                Create
+                {{ t('common.create') }}
               </LoadingButton>
             </div>
           </div>
@@ -848,30 +867,30 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
     <Teleport to="body">
       <div v-if="editRole" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="editRole = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">Edit role</h3>
+          <h3 class="section-title mb-4">{{ t('access.editRole') }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="label" for="edit-role-name">Role name</label>
+              <label class="label" for="edit-role-name">{{ t('access.roleName') }}</label>
               <input id="edit-role-name" v-model="editRoleName" class="input" :disabled="editRole.is_system" maxlength="49" />
             </div>
             <div>
-              <label class="label" for="edit-role-desc">Description</label>
+              <label class="label" for="edit-role-desc">{{ t('access.description') }}</label>
               <input id="edit-role-desc" v-model="editRoleDesc" class="input" maxlength="200" />
             </div>
             <label v-if="!editRole.is_system" class="flex items-center gap-2.5 text-sm text-slate-700">
               <input v-model="editRoleActive" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-indigo-600" />
-              Active (inactive roles grant nothing)
+              {{ t('access.activeRoleLabel') }}
             </label>
             <div class="flex justify-end gap-3">
-              <button class="btn btn-secondary" @click="editRole = null">Cancel</button>
+              <button class="btn btn-secondary" @click="editRole = null">{{ t('common.cancel') }}</button>
               <LoadingButton
                 class="btn btn-primary"
-                loading-text="Saving…"
+                :loading-text="t('common.saving')"
                 :loading="roleOps.isPending(editRole.id, 'edit')"
                 :disabled="roleOps.isBusy(editRole.id)"
                 @click="roleOps.run(editRole.id, 'edit', () => saveRoleEdit(editRole!))"
               >
-                Save
+                {{ t('common.save') }}
               </LoadingButton>
             </div>
           </div>
@@ -883,24 +902,24 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
     <Teleport to="body">
       <div v-if="deleteRoleTarget" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="deleteRoleTarget = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="mb-2 text-base font-semibold text-rose-700">Delete role?</h3>
+          <h3 class="mb-2 text-base font-semibold text-rose-700">{{ t('access.deleteRoleTitle') }}</h3>
           <p class="text-sm text-slate-600">
             "<strong class="capitalize">{{ deleteRoleTarget.name.replace(/_/g, ' ') }}</strong>"
             <template v-if="deleteRoleTarget.user_count > 0">
-              is still assigned to {{ deleteRoleTarget.user_count }} user(s) — reassign them first.
+              {{ t('access.deleteRoleStillAssigned', { count: formatNumber(deleteRoleTarget.user_count) }) }}
             </template>
-            <template v-else>and all its permission grants will be removed.</template>
+            <template v-else>{{ t('access.deleteRoleWillRemove') }}</template>
           </p>
           <div class="mt-5 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="deleteRoleTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="deleteRoleTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-danger"
-              loading-text="Deleting…"
+              :loading-text="t('common.deleting')"
               :loading="roleOps.isPending(deleteRoleTarget.id, 'delete')"
               :disabled="deleteRoleTarget.user_count > 0 || roleOps.isBusy(deleteRoleTarget.id)"
               @click="roleOps.run(deleteRoleTarget.id, 'delete', () => doDeleteRole(deleteRoleTarget!))"
             >
-              Delete
+              {{ t('common.delete') }}
             </LoadingButton>
           </div>
         </div>
@@ -911,7 +930,7 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
     <Teleport to="body">
       <div v-if="editUser" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="editUser = null">
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">User roles</h3>
+          <h3 class="section-title mb-1">{{ t('access.userRoles') }}</h3>
           <p class="mb-4 text-sm text-slate-500">{{ editUser.full_name }} (@{{ editUser.username }})</p>
           <div class="space-y-2">
             <label
@@ -931,18 +950,18 @@ window.addEventListener('beforeunload', beforeUnloadGuard)
             </label>
           </div>
           <p class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-            The last Super Admin cannot lose super_admin. Roles take effect on the user's next request.
+            {{ t('access.userRolesNote') }}
           </p>
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="editUser = null">Cancel</button>
+            <button class="btn btn-secondary" @click="editUser = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Saving…"
+              :loading-text="t('common.saving')"
               :loading="userOps.isPending(editUser.id, 'roles')"
               :disabled="userOps.isBusy(editUser.id)"
               @click="userOps.run(editUser.id, 'roles', () => saveUserRoles(editUser!))"
             >
-              Save roles
+              {{ t('accounts.saveRoles') }}
             </LoadingButton>
           </div>
         </div>

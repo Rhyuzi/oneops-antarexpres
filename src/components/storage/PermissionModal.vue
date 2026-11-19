@@ -4,11 +4,12 @@ import { Loader2, Shield, X } from 'lucide-vue-next'
 import {
   getFolderPermissions,
   putFolderPermissions,
-  errorMessage,
   type PermissionRow,
   type RoleRow,
 } from '../../lib/storageApi'
 import LoadingButton from '../LoadingButton.vue'
+import { t, type MessageKey } from '../../i18n'
+import { apiErrorMessage, localizeRoleDescription } from '../../i18n/systemMessages'
 import { useAsyncAction } from '../../composables/useAsyncAction'
 
 const props = defineProps<{ folderId: number; folderName: string }>()
@@ -18,6 +19,11 @@ const roles = ref<RoleRow[]>([])
 const rows = ref<PermissionRow[]>([])
 const loading = ref(true)
 const error = ref('')
+
+/** Folder capability column label key (caps.can_view …). */
+function capKey(cap: keyof PermissionRow): MessageKey {
+  return `caps.${String(cap)}` as MessageKey
+}
 
 const CAPS: Array<{ key: keyof PermissionRow; label: string }> = [
   { key: 'can_view', label: 'View' },
@@ -64,7 +70,7 @@ onMounted(async () => {
     rows.value = data.permissions
     ensureAllRows()
   } catch (err) {
-    error.value = errorMessage(err, 'Could not load permissions.')
+    error.value = apiErrorMessage(err, 'access.loadPermissionsFailed')
   } finally {
     loading.value = false
   }
@@ -85,7 +91,7 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
     emit('saved')
     emit('close')
   } catch (err) {
-    error.value = errorMessage(err, 'Save failed.')
+    error.value = apiErrorMessage(err, 'access.saveFailed')
   }
 })
 </script>
@@ -100,10 +106,10 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
         <div class="flex items-center gap-3 border-b border-slate-200 px-5 py-3.5">
           <Shield :size="20" class="text-indigo-600" />
           <div class="flex-1">
-            <p class="font-semibold text-slate-900">Folder permissions</p>
+            <p class="font-semibold text-slate-900">{{ t('storage.folderPermissions') }}</p>
             <p class="text-xs text-slate-400">{{ folderName }}</p>
           </div>
-          <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="emit('close')">
+          <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" :aria-label="t('common.close')" @click="emit('close')">
             <X :size="18" />
           </button>
         </div>
@@ -115,23 +121,22 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
 
           <div v-else>
             <p class="mb-4 rounded-xl bg-indigo-50 px-4 py-3 text-xs text-indigo-800">
-              These settings override inherited permissions for this folder and everything inside
-              it. Leave every box unchecked for a role to remove its explicit grant (the role then
-              inherits from the parent folder). <strong>Super Admin</strong> always has full access.
+              {{ t('storage.permissionInfoBefore') }} <strong>{{ t('storage.permissionInfoSuper') }}</strong>
+              {{ t('storage.permissionInfoAfter') }}
             </p>
 
             <div class="overflow-x-auto rounded-xl border border-slate-200">
               <table class="w-full min-w-[720px] text-sm">
                 <thead>
                   <tr class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                    <th class="px-4 py-2.5 font-semibold">Role</th>
+                    <th class="px-4 py-2.5 font-semibold">{{ t('storage.colRole') }}</th>
                     <th
                       v-for="cap in CAPS"
                       :key="cap.key"
                       class="px-2 py-2.5 text-center font-semibold"
-                      :title="cap.label"
+                      :title="t(capKey(cap.key))"
                     >
-                      {{ cap.label.replace('can_', '').replace(/_/g, ' ') }}
+                      {{ t(capKey(cap.key)) }}
                     </th>
                   </tr>
                 </thead>
@@ -145,7 +150,7 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
                       <p class="font-medium capitalize text-slate-800">
                         {{ role.name.replace(/_/g, ' ') }}
                       </p>
-                      <p v-if="role.description" class="text-xs text-slate-400">{{ role.description }}</p>
+                      <p v-if="role.description" class="text-xs text-slate-400">{{ localizeRoleDescription(role.description) }}</p>
                     </td>
                     <td v-for="cap in CAPS" :key="cap.key" class="px-2 py-2.5 text-center">
                       <input
@@ -167,15 +172,15 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
         </div>
 
         <div class="flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3.5">
-          <button class="btn btn-secondary" @click="emit('close')">Cancel</button>
+          <button class="btn btn-secondary" @click="emit('close')">{{ t('common.cancel') }}</button>
           <LoadingButton
             class="btn btn-primary"
-            loading-text="Saving…"
+            :loading-text="t('common.saving')"
             :loading="saveAction.pending"
             :disabled="loading"
             @click="saveAction.run()"
           >
-            Save permissions
+            {{ t('access.savePermissions') }}
           </LoadingButton>
         </div>
       </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CheckCircle2, Info, X, XCircle } from 'lucide-vue-next'
 import { storageStore } from '../../stores/storage'
+import { t } from '../../i18n'
 
 const store = storageStore
 </script>
@@ -24,6 +25,7 @@ const store = storageStore
         <p class="flex-1 break-words text-sm">{{ toast.message }}</p>
         <button
           class="shrink-0 rounded p-0.5 opacity-50 hover:opacity-100"
+          :aria-label="t('storage.dismiss')"
           @click="store.dismissToast(toast.id)"
         >
           <X :size="14" />

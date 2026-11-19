@@ -23,6 +23,8 @@ import {
 import type { RecordStatus } from '../types'
 import LoadingButton from '../components/LoadingButton.vue'
 import { nextFrame, useAsyncAction } from '../composables/useAsyncAction'
+import { formatNumber, t, type MessageKey } from '../i18n'
+import { localizeMessage } from '../i18n/systemMessages'
 
 const search = ref('')
 const statusFilter = ref<RecordStatus | 'all'>('all')
@@ -32,13 +34,13 @@ const uploadError = ref('')
 const importAction = useAsyncAction(async (file: File): Promise<void> => {
   uploadError.value = ''
   if (!/\.(xlsx|xls)$/i.test(file.name)) {
-    uploadError.value = 'Unsupported file type. Please upload an .xlsx or .xls file.'
+    uploadError.value = 'rechecker.unsupportedFile'
     return
   }
   try {
     await store.uploadFile(file)
   } catch (e) {
-    uploadError.value = e instanceof Error ? e.message : 'Failed to parse the Excel file.'
+    uploadError.value = e instanceof Error ? 'raw:' + e.message : 'rechecker.parseFailed'
   }
 })
 
@@ -81,14 +83,21 @@ const canStart = computed(
   () => store.state.records.length > 0 && hasCredentials.value && !store.state.running
 )
 
-const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
-  { value: 'all', label: 'All statuses' },
-  { value: 'pending', label: 'Pending' },
-  { value: 'processing', label: 'Processing' },
-  { value: 'success', label: 'Success' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'skipped', label: 'Skipped' },
+const statusOptions: Array<{ value: RecordStatus | 'all'; label: MessageKey }> = [
+  { value: 'all', label: 'rechecker.allStatuses' },
+  { value: 'pending', label: 'rechecker.status.pending' },
+  { value: 'processing', label: 'rechecker.status.processing' },
+  { value: 'success', label: 'rechecker.status.success' },
+  { value: 'failed', label: 'rechecker.status.failed' },
+  { value: 'skipped', label: 'rechecker.status.skipped' },
 ]
+
+/** uploadError holds a key, or "raw:<parser message>" localized at render. */
+const uploadErrorText = computed(() => {
+  const v = uploadError.value
+  if (!v) return ''
+  return v.startsWith('raw:') ? localizeMessage(v.slice(4)) : t(v as MessageKey)
+})
 </script>
 
 <template>
@@ -96,29 +105,29 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
     <!-- Page header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold text-slate-900">Number Rechecking</h1>
+        <h1 class="text-xl font-bold text-slate-900">{{ t('rechecker.title') }}</h1>
         <p class="text-sm text-slate-500">
-          Recheck recipient phone numbers from SiCepat AWB data
-          <span v-if="hasCredentials" class="ml-1 font-medium text-emerald-600">· credentials configured</span>
+          {{ t('rechecker.subtitle') }}
+          <span v-if="hasCredentials" class="ml-1 font-medium text-emerald-600">{{ t('rechecker.credentialsConfigured') }}</span>
         </p>
       </div>
       <router-link class="btn btn-secondary" to="/ops/number-rechecking/settings">
-        <Settings :size="16" /> Settings
+        <Settings :size="16" /> {{ t('rechecker.settings') }}
       </router-link>
     </div>
 
     <!-- Statistics -->
     <section class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-      <StatCard label="Total AWB" :value="stats.total" :icon="FileSpreadsheet" tone="info" />
+      <StatCard :label="t('rechecker.statTotal')" :value="formatNumber(stats.total)" :icon="FileSpreadsheet" tone="info" />
       <StatCard
-        label="Successfully Rechecked"
-        :value="stats.success"
+        :label="t('rechecker.statSuccess')"
+        :value="formatNumber(stats.success)"
         :icon="CheckCircle2"
         tone="success"
       />
-      <StatCard label="Failed" :value="stats.failed" :icon="XCircle" tone="error" />
-      <StatCard label="Pending" :value="stats.pending" :icon="Clock" tone="warning" />
-      <StatCard label="Skipped" :value="stats.skipped" :icon="SkipForward" tone="default" />
+      <StatCard :label="t('rechecker.statFailed')" :value="formatNumber(stats.failed)" :icon="XCircle" tone="error" />
+      <StatCard :label="t('rechecker.statPending')" :value="formatNumber(stats.pending)" :icon="Clock" tone="warning" />
+      <StatCard :label="t('rechecker.statSkipped')" :value="formatNumber(stats.skipped)" :icon="SkipForward" tone="default" />
     </section>
 
     <!-- Missing credentials notice -->
@@ -128,18 +137,18 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
     >
       <div class="flex items-center gap-3 text-sm text-indigo-800">
         <Settings2 :size="20" />
-        <span>Configure your Bearer Token, X-Permission-Token and User ID before processing.</span>
+        <span>{{ t('rechecker.configureNotice') }}</span>
       </div>
       <router-link class="btn btn-secondary shrink-0" to="/ops/number-rechecking/settings">
-        Open Settings
+        {{ t('rechecker.openSettings') }}
       </router-link>
     </div>
 
     <!-- Upload -->
     <section class="card p-5">
-      <h2 class="section-title">Upload</h2>
+      <h2 class="section-title">{{ t('rechecker.upload') }}</h2>
       <UploadZone :busy="importAction.pending" @select="importAction.run" />
-      <p v-if="uploadError" class="mt-3 text-sm text-rose-600">{{ uploadError }}</p>
+      <p v-if="uploadError" class="mt-3 text-sm text-rose-600">{{ uploadErrorText }}</p>
       <div
         v-if="store.state.fileName"
         class="mt-4 flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-3 text-sm"
@@ -147,33 +156,33 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
         <FileSpreadsheet :size="18" class="text-indigo-600" />
         <span class="font-medium text-slate-700">{{ store.state.fileName }}</span>
         <span class="text-slate-400">·</span>
-        <span class="text-slate-500">{{ stats.total }} records detected</span>
+        <span class="text-slate-500">{{ t('rechecker.recordsDetected', { count: formatNumber(stats.total) }) }}</span>
       </div>
     </section>
 
     <!-- Processing -->
     <section class="card p-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="section-title">Processing</h2>
+        <h2 class="section-title">{{ t('rechecker.processing') }}</h2>
         <div class="flex flex-wrap items-center gap-2">
           <button v-if="!store.state.running" class="btn btn-primary" :disabled="!canStart" @click="store.startProcessing()">
-            <Play :size="18" /> Start Processing
+            <Play :size="18" /> {{ t('rechecker.startProcessing') }}
           </button>
           <template v-else>
             <button class="btn btn-secondary" :disabled="store.state.stopRequested" @click="store.togglePause()">
               <Pause v-if="!store.state.paused" :size="18" />
               <Play v-else :size="18" />
-              {{ store.state.paused ? 'Resume' : 'Pause' }}
+              {{ store.state.paused ? t('rechecker.resume') : t('rechecker.pause') }}
             </button>
             <!-- Stop is a request; workers finish their in-flight lookups first. -->
             <LoadingButton
               class="btn btn-danger"
-              loading-text="Stopping…"
+              :loading-text="t('rechecker.stopping')"
               :spinner-size="18"
               :loading="store.state.stopRequested"
               @click="store.stopProcessing()"
             >
-              <Square :size="18" /> Stop
+              <Square :size="18" /> {{ t('rechecker.stop') }}
             </LoadingButton>
           </template>
         </div>
@@ -181,7 +190,7 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
 
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
         <div>
-          <label class="label" for="delay-ms">Delay between requests (ms)</label>
+          <label class="label" for="delay-ms">{{ t('rechecker.delay') }}</label>
           <input
             id="delay-ms"
             v-model.number="store.state.config.delayMs"
@@ -193,28 +202,28 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
           />
         </div>
         <div>
-          <label class="label" for="concurrency">Concurrency</label>
+          <label class="label" for="concurrency">{{ t('rechecker.concurrency') }}</label>
           <select
             id="concurrency"
             v-model.number="store.state.config.concurrency"
             class="input"
           >
-            <option :value="1">1 request at a time (default)</option>
-            <option :value="2">2 concurrent</option>
-            <option :value="3">3 concurrent</option>
+            <option :value="1">{{ t('rechecker.concurrencyOne') }}</option>
+            <option :value="2">{{ t('rechecker.concurrencyMany', { count: 2 }) }}</option>
+            <option :value="3">{{ t('rechecker.concurrencyMany', { count: 3 }) }}</option>
           </select>
         </div>
       </div>
 
       <div v-if="store.state.authError" class="mt-4 flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3.5">
         <AlertTriangle class="mt-0.5 shrink-0 text-rose-600" :size="18" />
-        <p class="text-sm text-rose-700">{{ store.state.authError }}</p>
+        <p class="text-sm text-rose-700">{{ localizeMessage(store.state.authError) }}</p>
       </div>
 
       <div v-if="store.state.records.length" class="mt-5">
         <div class="mb-1.5 flex items-center justify-between text-sm">
           <span class="font-medium text-slate-600">
-            {{ processed }} / {{ stats.total }} processed
+            {{ t('rechecker.processed', { done: formatNumber(processed), total: formatNumber(stats.total) }) }}
           </span>
           <span class="font-semibold text-slate-900">{{ percent }}%</span>
         </div>
@@ -225,7 +234,7 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
           ></div>
         </div>
         <p v-if="store.state.running && store.state.currentAwb" class="mt-2 text-xs text-slate-500">
-          Current AWB: <span class="font-mono font-semibold text-slate-700">{{ store.state.currentAwb }}</span>
+          {{ t('rechecker.currentAwb') }} <span class="font-mono font-semibold text-slate-700">{{ store.state.currentAwb }}</span>
         </p>
       </div>
     </section>
@@ -233,7 +242,7 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
     <!-- Results -->
     <section class="card p-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="section-title">Results</h2>
+        <h2 class="section-title">{{ t('rechecker.results') }}</h2>
         <div class="flex flex-wrap items-center gap-2">
           <div class="relative">
             <Search class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" :size="16" />
@@ -241,30 +250,30 @@ const statusOptions: Array<{ value: RecordStatus | 'all'; label: string }> = [
               v-model="search"
               type="text"
               class="input w-56 pl-9"
-              placeholder="Search AWB or recipient"
+              :placeholder="t('rechecker.searchPlaceholder')"
             />
           </div>
           <select v-model="statusFilter" class="input w-44">
             <option v-for="opt in statusOptions" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
+              {{ t(opt.label) }}
             </option>
           </select>
           <LoadingButton
             class="btn btn-primary"
-            loading-text="Exporting…"
+            :loading-text="t('rechecker.exporting')"
             :spinner-size="18"
             :loading="exportAction.pending"
             :disabled="stats.success === 0"
             @click="exportAction.run()"
           >
-            <Download :size="18" /> Download Excel
+            <Download :size="18" /> {{ t('rechecker.downloadExcel') }}
           </LoadingButton>
         </div>
       </div>
 
       <div v-if="!store.state.records.length" class="mt-6 flex flex-col items-center justify-center py-14 text-center">
         <Inbox :size="40" class="text-slate-300" />
-        <p class="mt-3 text-sm text-slate-500">Upload an Excel file to see the results here.</p>
+        <p class="mt-3 text-sm text-slate-500">{{ t('rechecker.emptyResults') }}</p>
       </div>
       <div v-else class="mt-4">
         <ResultsTable :records="filtered" />

@@ -7,6 +7,8 @@ import {
   formatBytes,
   type StorageFile,
 } from '../../lib/storageApi'
+import { t } from '../../i18n'
+import { apiErrorMessage } from '../../i18n/systemMessages'
 
 const props = defineProps<{ file: StorageFile | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -33,8 +35,7 @@ watch(
         url.value = await getPreviewUrl(file.id)
       }
     } catch (err) {
-      error.value = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-        || 'Could not open file.'
+      error.value = apiErrorMessage(err, 'storage.openFileFailed')
     } finally {
       loading.value = false
     }
@@ -66,12 +67,12 @@ watch(
             class="btn btn-secondary"
             download
           >
-            <Download :size="16" /> Download
+            <Download :size="16" /> {{ t('storage.download') }}
           </a>
-          <a v-if="url" :href="url" target="_blank" rel="noopener" class="btn btn-ghost" title="Open in new tab">
+          <a v-if="url" :href="url" target="_blank" rel="noopener" class="btn btn-ghost" :title="t('storage.openInNewTab')" :aria-label="t('storage.openInNewTab')">
             <ExternalLink :size="16" />
           </a>
-          <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" @click="emit('close')">
+          <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700" :aria-label="t('common.close')" @click="emit('close')">
             <X :size="18" />
           </button>
         </div>
@@ -80,7 +81,7 @@ watch(
         <div class="flex min-h-[300px] flex-1 items-center justify-center overflow-auto bg-slate-50 p-4">
           <div v-if="loading" class="flex flex-col items-center gap-2 text-slate-400">
             <Loader2 :size="28" class="animate-spin" />
-            <p class="text-sm">Preparing preview…</p>
+            <p class="text-sm">{{ t('storage.preparingPreview') }}</p>
           </div>
 
           <p v-else-if="error" class="max-w-sm text-center text-sm text-rose-600">{{ error }}</p>
@@ -112,10 +113,10 @@ watch(
           <!-- Not previewable -->
           <div v-else class="flex flex-col items-center gap-3 text-center">
             <p class="text-sm text-slate-500">
-              Preview is not available for {{ file.file_extension.toUpperCase() }} files.
+              {{ t('storage.previewUnavailable', { ext: file.file_extension.toUpperCase() }) }}
             </p>
             <a v-if="downloadUrl" :href="downloadUrl" class="btn btn-primary" download>
-              <Download :size="16" /> Download to view
+              <Download :size="16" /> {{ t('storage.downloadToView') }}
             </a>
           </div>
         </div>

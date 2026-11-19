@@ -28,6 +28,8 @@ import PermissionModal from '../components/storage/PermissionModal.vue'
 import ToastStack from '../components/storage/ToastStack.vue'
 import LoadingButton from '../components/LoadingButton.vue'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
+import { formatNumber, t, tn, type MessageKey } from '../i18n'
+import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
 import {
   deleteFile,
   deleteFolder,
@@ -104,11 +106,11 @@ const totalPages = computed(() =>
   Math.max(1, Math.ceil(store.state.filesTotal / store.state.filesPageSize))
 )
 
-const sortOptions = [
-  { value: 'created_at', label: 'Upload date' },
-  { value: 'file_name', label: 'Name' },
-  { value: 'file_size', label: 'Size' },
-  { value: 'uploader', label: 'Uploader' },
+const sortOptions: Array<{ value: string; label: MessageKey }> = [
+  { value: 'created_at', label: 'storage.sortUploadDate' },
+  { value: 'file_name', label: 'storage.sortName' },
+  { value: 'file_size', label: 'storage.sortSize' },
+  { value: 'uploader', label: 'storage.sortUploader' },
 ]
 
 // -- lifecycle ---------------------------------------------------------------
@@ -175,12 +177,11 @@ function doRenameFile(): void {
 async function renameFile(target: StorageFile, name: string): Promise<void> {
   try {
     await updateFile(target.id, { name })
-    store.toast('success', 'File renamed.')
+    store.toast('success', t('storage.fileRenamed'))
     fileRenameTarget.value = null
     await store.refreshFiles()
   } catch (err) {
-    const e = err as { response?: { data?: { message?: string } } }
-    store.toast('error', e.response?.data?.message || 'Rename failed.')
+    store.toast('error', apiErrorMessage(err, 'storage.renameFailed'))
   }
 }
 
@@ -194,12 +195,11 @@ function doMoveFile(): void {
 async function moveFile(target: StorageFile, folderId: number): Promise<void> {
   try {
     await updateFile(target.id, { folderId })
-    store.toast('success', 'File moved.')
+    store.toast('success', t('storage.fileMoved'))
     fileMoveTarget.value = null
     await Promise.all([store.refreshFiles(), store.refreshFolders()])
   } catch (err) {
-    const e = err as { response?: { data?: { message?: string } } }
-    store.toast('error', e.response?.data?.message || 'Move failed.')
+    store.toast('error', apiErrorMessage(err, 'storage.moveFailed'))
   }
 }
 
@@ -212,12 +212,11 @@ function doDeleteFile(): void {
 async function removeFile(target: StorageFile): Promise<void> {
   try {
     await deleteFile(target.id)
-    store.toast('success', 'File deleted.')
+    store.toast('success', t('storage.fileDeleted'))
     fileDeleteTarget.value = null
     await Promise.all([store.refreshFiles(), store.refreshFolders()])
   } catch (err) {
-    const e = err as { response?: { data?: { message?: string } } }
-    store.toast('error', e.response?.data?.message || 'Delete failed.')
+    store.toast('error', apiErrorMessage(err, 'storage.deleteFailed'))
   }
 }
 
@@ -235,8 +234,7 @@ async function startDownload(file: StorageFile): Promise<void> {
     a.click()
     a.remove()
   } catch (err) {
-    const e = err as { response?: { data?: { message?: string } } }
-    store.toast('error', e.response?.data?.message || 'Download failed.')
+    store.toast('error', apiErrorMessage(err, 'storage.downloadFailed'))
   }
 }
 
@@ -286,28 +284,28 @@ function folderMenuId(f: StorageFolder): string {
     <!-- Header -->
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold text-slate-900">Data Warrior</h1>
-        <p class="text-sm text-slate-500">Centralized document repository</p>
+        <h1 class="text-xl font-bold text-slate-900">{{ t('storage.title') }}</h1>
+        <p class="text-sm text-slate-500">{{ t('storage.subtitle') }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <button class="btn btn-secondary lg:hidden" @click="mobileTreeOpen = !mobileTreeOpen">
-          <Folder :size="16" /> Folders
+          <Folder :size="16" /> {{ t('storage.folders') }}
         </button>
         <button
           v-if="canCreateFolder"
           class="btn btn-secondary"
           @click="showCreateFolder = true"
         >
-          <FolderPlus :size="16" /> New folder
+          <FolderPlus :size="16" /> {{ t('storage.newFolder') }}
         </button>
         <LoadingButton
           v-if="canUpload"
           class="btn btn-primary"
-          loading-text="Uploading…"
+          :loading-text="t('storage.uploading')"
           :loading="store.uploading"
           @click="openFilePicker"
         >
-          <Upload :size="16" /> Upload
+          <Upload :size="16" /> {{ t('storage.upload') }}
         </LoadingButton>
       </div>
     </div>
@@ -319,7 +317,7 @@ function folderMenuId(f: StorageFolder): string {
       >
         <div class="card sticky top-[4.5rem] max-h-[calc(100vh-7rem)] overflow-auto p-3">
           <p class="mb-2 px-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Folders
+            {{ t('storage.folders') }}
           </p>
           <FolderTree :folders="store.rootFolders" />
         </div>
@@ -333,8 +331,8 @@ function folderMenuId(f: StorageFolder): string {
           class="fixed bottom-0 left-0 right-0 top-16 z-40 overflow-auto bg-white p-4 lg:hidden"
         >
           <div class="mb-3 flex items-center justify-between">
-            <p class="font-semibold text-slate-800">Folders</p>
-            <button class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100" @click="mobileTreeOpen = false">
+            <p class="font-semibold text-slate-800">{{ t('storage.folders') }}</p>
+            <button class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100" :aria-label="t('common.close')" @click="mobileTreeOpen = false">
               <X :size="18" />
             </button>
           </div>
@@ -360,7 +358,7 @@ function folderMenuId(f: StorageFolder): string {
                 :class="isRoot ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-800'"
                 @click="store.navigateTo('root')"
               >
-                <HardDrive :size="15" /> Root
+                <HardDrive :size="15" /> {{ t('storage.root') }}
               </button>
               <template v-for="crumb in store.state.breadcrumb" :key="crumb.id">
                 <ChevronRight :size="14" class="shrink-0 text-slate-300" />
@@ -385,7 +383,7 @@ function folderMenuId(f: StorageFolder): string {
                 v-model="searchInput"
                 type="text"
                 class="input w-48 py-2 pl-9 sm:w-64"
-                placeholder="Search files…"
+                :placeholder="t('storage.searchFiles')"
               />
             </div>
 
@@ -398,12 +396,13 @@ function folderMenuId(f: StorageFolder): string {
                 @change="store.setSorting(($event.target as HTMLSelectElement).value)"
               >
                 <option v-for="opt in sortOptions" :key="opt.value" :value="opt.value">
-                  {{ opt.label }}
+                  {{ t(opt.label) }}
                 </option>
               </select>
               <button
                 class="rounded-xl border border-slate-300 bg-white p-2 text-slate-500 hover:bg-slate-50"
-                :title="store.state.order === 'asc' ? 'Ascending' : 'Descending'"
+                :title="store.state.order === 'asc' ? t('storage.ascending') : t('storage.descending')"
+                :aria-label="store.state.order === 'asc' ? t('storage.ascending') : t('storage.descending')"
                 @click="store.setSorting(store.state.sort, store.state.order === 'asc' ? 'desc' : 'asc')"
               >
                 <ArrowUpDown :size="15" :class="store.state.order === 'asc' ? 'rotate-180' : ''" />
@@ -415,6 +414,8 @@ function folderMenuId(f: StorageFolder): string {
               <button
                 class="p-2 transition"
                 :class="store.state.viewMode === 'grid' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-400 hover:bg-slate-50'"
+                :title="t('storage.gridView')"
+                :aria-label="t('storage.gridView')"
                 @click="store.setViewMode('grid')"
               >
                 <Grid3X3 :size="15" />
@@ -422,6 +423,8 @@ function folderMenuId(f: StorageFolder): string {
               <button
                 class="p-2 transition"
                 :class="store.state.viewMode === 'list' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-400 hover:bg-slate-50'"
+                :title="t('storage.listView')"
+                :aria-label="t('storage.listView')"
                 @click="store.setViewMode('list')"
               >
                 <List :size="15" />
@@ -435,37 +438,37 @@ function folderMenuId(f: StorageFolder): string {
             class="mb-4 flex items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5"
           >
             <p class="text-sm text-indigo-800">
-              You manage this folder's permissions.
+              {{ t('storage.youManagePermissions') }}
             </p>
             <button
               class="btn btn-secondary"
               @click="permissionFolder = store.state.folders.find((f) => f.id === store.state.currentFolderId) ?? null"
             >
-              <Shield :size="15" /> Permissions
+              <Shield :size="15" /> {{ t('storage.permissions') }}
             </button>
           </div>
 
           <!-- Loading / empty / content -->
           <div v-if="store.state.filesLoading && !store.state.files.length && !visibleFolders.length" class="flex flex-1 flex-col items-center justify-center py-16 text-slate-400">
             <Loader2 :size="30" class="animate-spin" />
-            <p class="mt-3 text-sm">Loading…</p>
+            <p class="mt-3 text-sm">{{ t('common.loading') }}</p>
           </div>
 
           <div v-else-if="store.state.foldersError" class="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">
-            {{ store.state.foldersError }}
+            {{ localizeMessage(store.state.foldersError) }}
           </div>
 
           <div v-else-if="store.state.filesError" class="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">
-            {{ store.state.filesError }}
+            {{ localizeMessage(store.state.filesError) }}
           </div>
 
           <div v-else-if="!visibleFolders.length && !store.state.files.length" class="flex flex-1 flex-col items-center justify-center py-16 text-center">
             <PackageOpen :size="40" class="text-slate-300" />
             <p class="mt-3 text-sm text-slate-500">
-              {{ store.state.search ? 'No files match your search.' : 'This folder is empty.' }}
+              {{ store.state.search ? t('storage.noSearchResults') : t('storage.emptyFolder') }}
             </p>
             <p v-if="canUpload && !store.state.search" class="mt-1 text-xs text-slate-400">
-              Drag & drop files here, or click Upload.
+              {{ t('storage.dropHint') }}
             </p>
           </div>
 
@@ -473,7 +476,7 @@ function folderMenuId(f: StorageFolder): string {
             <!-- Folders section -->
             <div v-if="visibleFolders.length" class="mb-5">
               <p class="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Folders ({{ visibleFolders.length }})
+                {{ t('storage.foldersCount', { count: formatNumber(visibleFolders.length) }) }}
               </p>
 
               <!-- Grid -->
@@ -489,8 +492,8 @@ function folderMenuId(f: StorageFolder): string {
                   <div class="min-w-0 flex-1">
                     <p class="truncate text-sm font-semibold text-slate-800">{{ folder.name }}</p>
                     <p class="text-xs text-slate-400">
-                      {{ folder.child_count }} folder{{ folder.child_count === 1 ? '' : 's' }} ·
-                      {{ folder.file_count }} file{{ folder.file_count === 1 ? '' : 's' }}
+                      {{ tn(folder.child_count, 'storage.folderCountOne', 'storage.folderCountOther') }} ·
+                      {{ tn(folder.file_count, 'storage.fileCountOne', 'storage.fileCountOther') }}
                     </p>
                   </div>
                   <button
@@ -510,7 +513,7 @@ function folderMenuId(f: StorageFolder): string {
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                       @click="store.navigateTo(folder.id)"
                     >
-                      <Folder :size="15" /> Open
+                      <Folder :size="15" /> {{ t('common.open') }}
                     </button>
                     <button
                       v-if="folder.permissions.can_rename"
@@ -518,7 +521,7 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="folderOps.isBusy(folder.id)"
                       @click="renameTarget = folder; renameValue = folder.name"
                     >
-                      <Pencil :size="15" /> Rename
+                      <Pencil :size="15" /> {{ t('common.rename') }}
                     </button>
                     <button
                       v-if="folder.permissions.can_move"
@@ -526,14 +529,14 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="folderOps.isBusy(folder.id)"
                       @click="moveTarget = folder; moveParentId = folder.parent_id"
                     >
-                      <FolderInput :size="15" /> Move
+                      <FolderInput :size="15" /> {{ t('common.move') }}
                     </button>
                     <button
                       v-if="folder.permissions.can_manage_permissions"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                       @click="permissionFolder = folder"
                     >
-                      <Shield :size="15" /> Permissions
+                      <Shield :size="15" /> {{ t('storage.permissions') }}
                     </button>
                     <LoadingButton
                       v-if="folder.permissions.can_delete"
@@ -543,7 +546,7 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="folderOps.isBusy(folder.id)"
                       @click="folderDeleteTarget = folder"
                     >
-                      <Trash2 :size="15" /> Delete
+                      <Trash2 :size="15" /> {{ t('common.delete') }}
                     </LoadingButton>
                   </div>
                 </div>
@@ -573,7 +576,7 @@ function folderMenuId(f: StorageFolder): string {
             <!-- Files section -->
             <div v-if="store.state.files.length">
               <p class="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                Files ({{ store.state.filesTotal }})
+                {{ t('storage.filesCount', { count: formatNumber(store.state.filesTotal) }) }}
               </p>
 
               <!-- Grid -->
@@ -615,17 +618,17 @@ function folderMenuId(f: StorageFolder): string {
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                       @click="previewFile = file"
                     >
-                      <FileIcon :extension="file.file_extension" :size="15" /> Preview
+                      <FileIcon :extension="file.file_extension" :size="15" /> {{ t('storage.preview') }}
                     </button>
                     <LoadingButton
                       v-if="fileCaps?.can_download"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
                       :spinner-size="15"
-                      loading-text="Preparing…"
+                      :loading-text="t('common.preparing')"
                       :loading="downloadOps.isPending(file.id, 'download')"
                       @click="download(file)"
                     >
-                      <Upload :size="15" class="rotate-180" /> Download
+                      <Upload :size="15" class="rotate-180" /> {{ t('storage.download') }}
                     </LoadingButton>
                     <button
                       v-if="fileCaps?.can_rename"
@@ -633,7 +636,7 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="fileOps.isBusy(file.id)"
                       @click="fileRenameTarget = file; fileRenameValue = file.file_name"
                     >
-                      <Pencil :size="15" /> Rename
+                      <Pencil :size="15" /> {{ t('common.rename') }}
                     </button>
                     <button
                       v-if="fileCaps?.can_move"
@@ -641,7 +644,7 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="fileOps.isBusy(file.id)"
                       @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
                     >
-                      <FolderInput :size="15" /> Move
+                      <FolderInput :size="15" /> {{ t('common.move') }}
                     </button>
                     <LoadingButton
                       v-if="fileCaps?.can_delete"
@@ -651,7 +654,7 @@ function folderMenuId(f: StorageFolder): string {
                       :disabled="fileOps.isBusy(file.id)"
                       @click="fileDeleteTarget = file"
                     >
-                      <Trash2 :size="15" /> Delete
+                      <Trash2 :size="15" /> {{ t('common.delete') }}
                     </LoadingButton>
                   </div>
                 </div>
@@ -662,10 +665,10 @@ function folderMenuId(f: StorageFolder): string {
                 <table class="w-full min-w-[640px] text-sm">
                   <thead>
                     <tr class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                      <th class="px-4 py-2.5 font-semibold">Name</th>
-                      <th class="px-4 py-2.5 font-semibold">Size</th>
-                      <th class="hidden px-4 py-2.5 font-semibold sm:table-cell">Uploader</th>
-                      <th class="hidden px-4 py-2.5 font-semibold md:table-cell">Uploaded</th>
+                      <th class="px-4 py-2.5 font-semibold">{{ t('storage.colName') }}</th>
+                      <th class="px-4 py-2.5 font-semibold">{{ t('storage.colSize') }}</th>
+                      <th class="hidden px-4 py-2.5 font-semibold sm:table-cell">{{ t('storage.colUploader') }}</th>
+                      <th class="hidden px-4 py-2.5 font-semibold md:table-cell">{{ t('storage.colUploaded') }}</th>
                       <th class="w-24 px-4 py-2.5"></th>
                     </tr>
                   </thead>
@@ -707,17 +710,17 @@ function folderMenuId(f: StorageFolder): string {
                             class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                             @click="previewFile = file"
                           >
-                            Preview
+                            {{ t('storage.preview') }}
                           </button>
                           <LoadingButton
                             v-if="fileCaps?.can_download"
                             class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
                             :spinner-size="15"
-                            loading-text="Preparing…"
+                            :loading-text="t('common.preparing')"
                             :loading="downloadOps.isPending(file.id, 'download')"
                             @click="download(file)"
                           >
-                            Download
+                            {{ t('storage.download') }}
                           </LoadingButton>
                           <button
                             v-if="fileCaps?.can_rename"
@@ -725,7 +728,7 @@ function folderMenuId(f: StorageFolder): string {
                             :disabled="fileOps.isBusy(file.id)"
                             @click="fileRenameTarget = file; fileRenameValue = file.file_name"
                           >
-                            Rename
+                            {{ t('common.rename') }}
                           </button>
                           <button
                             v-if="fileCaps?.can_move"
@@ -733,7 +736,7 @@ function folderMenuId(f: StorageFolder): string {
                             :disabled="fileOps.isBusy(file.id)"
                             @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
                           >
-                            Move
+                            {{ t('common.move') }}
                           </button>
                           <LoadingButton
                             v-if="fileCaps?.can_delete"
@@ -743,7 +746,7 @@ function folderMenuId(f: StorageFolder): string {
                             :disabled="fileOps.isBusy(file.id)"
                             @click="fileDeleteTarget = file"
                           >
-                            Delete
+                            {{ t('common.delete') }}
                           </LoadingButton>
                         </div>
                       </td>
@@ -755,7 +758,7 @@ function folderMenuId(f: StorageFolder): string {
               <!-- Pagination -->
               <div v-if="totalPages > 1" class="mt-4 flex items-center justify-between text-sm">
                 <span class="text-slate-500">
-                  Page {{ store.state.filesPage }} of {{ totalPages }} · {{ store.state.filesTotal }} files
+                  {{ t('storage.paginationSummary', { page: formatNumber(store.state.filesPage), pages: formatNumber(totalPages), total: formatNumber(store.state.filesTotal) }) }}
                 </span>
                 <div class="flex gap-2">
                   <button
@@ -763,14 +766,14 @@ function folderMenuId(f: StorageFolder): string {
                     :disabled="store.state.filesPage <= 1 || store.state.filesLoading"
                     @click="store.setPage(store.state.filesPage - 1)"
                   >
-                    Prev
+                    {{ t('common.prev') }}
                   </button>
                   <button
                     class="btn btn-secondary px-3 py-1.5"
                     :disabled="store.state.filesPage >= totalPages || store.state.filesLoading"
                     @click="store.setPage(store.state.filesPage + 1)"
                   >
-                    Next
+                    {{ t('common.next') }}
                   </button>
                 </div>
               </div>
@@ -791,10 +794,10 @@ function folderMenuId(f: StorageFolder): string {
                     }"
                   >
                     {{
-                      up.status === 'done' ? 'Done'
-                      : up.status === 'error' ? 'Failed'
-                      : up.status === 'finalizing' ? 'Finalizing…'
-                      : `${up.progress}%`
+                      up.status === 'done' ? t('storage.uploadDone')
+                      : up.status === 'error' ? t('storage.uploadFailed')
+                      : up.status === 'finalizing' ? t('storage.uploadFinalizing')
+                      : `${formatNumber(up.progress)}%`
                     }}
                   </span>
                 </div>
@@ -805,11 +808,12 @@ function folderMenuId(f: StorageFolder): string {
                     :style="{ width: (up.status === 'done' ? 100 : up.progress) + '%' }"
                   />
                 </div>
-                <p v-if="up.error" class="mt-0.5 truncate text-xs text-rose-500">{{ up.error }}</p>
+                <p v-if="up.error" class="mt-0.5 truncate text-xs text-rose-500">{{ localizeMessage(up.error) }}</p>
               </div>
               <button
                 v-if="up.status === 'error'"
                 class="rounded p-1 text-slate-400 hover:text-slate-700"
+                :aria-label="t('storage.dismiss')"
                 @click="store.dismissUpload(up.id)"
               >
                 <X :size="14" />
@@ -833,10 +837,10 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="showCreateFolder = false"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">New folder</h3>
+          <h3 class="section-title mb-4">{{ t('storage.newFolder') }}</h3>
           <div class="space-y-4">
             <div>
-              <label class="label" for="new-folder-name">Folder name</label>
+              <label class="label" for="new-folder-name">{{ t('storage.folderName') }}</label>
               <input
                 id="new-folder-name"
                 v-model="newFolderName"
@@ -848,19 +852,19 @@ function folderMenuId(f: StorageFolder): string {
               />
             </div>
             <div>
-              <label class="label" for="new-folder-desc">Description (optional)</label>
+              <label class="label" for="new-folder-desc">{{ t('storage.descriptionOptional') }}</label>
               <input id="new-folder-desc" v-model="newFolderDesc" class="input" type="text" maxlength="500" />
             </div>
             <div class="flex justify-end gap-3">
-              <button class="btn btn-secondary" @click="showCreateFolder = false">Cancel</button>
+              <button class="btn btn-secondary" @click="showCreateFolder = false">{{ t('common.cancel') }}</button>
               <LoadingButton
                 class="btn btn-primary"
-                loading-text="Creating…"
+                :loading-text="t('common.creating')"
                 :loading="createFolderAction.pending"
                 :disabled="!newFolderName.trim()"
                 @click="createFolderAction.run()"
               >
-                Create
+                {{ t('common.create') }}
               </LoadingButton>
             </div>
           </div>
@@ -876,18 +880,18 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="renameTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">Rename folder</h3>
+          <h3 class="section-title mb-4">{{ t('storage.renameFolder') }}</h3>
           <input v-model="renameValue" class="input" type="text" maxlength="191" autofocus @keyup.enter="doRenameFolder" />
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="renameTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="renameTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Renaming…"
+              :loading-text="t('common.renaming')"
               :loading="folderOps.isPending(renameTarget.id, 'rename')"
               :disabled="!renameValue.trim() || folderOps.isBusy(renameTarget.id)"
               @click="doRenameFolder"
             >
-              Rename
+              {{ t('common.rename') }}
             </LoadingButton>
           </div>
         </div>
@@ -902,24 +906,24 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="moveTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">Move folder</h3>
-          <p class="mb-4 text-sm text-slate-500">"{{ moveTarget.name }}" → destination</p>
+          <h3 class="section-title mb-1">{{ t('storage.moveFolder') }}</h3>
+          <p class="mb-4 text-sm text-slate-500">{{ t('storage.moveDestination', { name: moveTarget.name }) }}</p>
           <select v-model="moveParentId" class="input">
-            <option :value="null">Root (top level)</option>
+            <option :value="null">{{ t('storage.rootTopLevel') }}</option>
             <option v-for="f in moveFolderOptions" :key="f.id" :value="f.id">
               {{ f.name }}
             </option>
           </select>
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="moveTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="moveTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Moving…"
+              :loading-text="t('common.moving')"
               :loading="folderOps.isPending(moveTarget.id, 'move')"
               :disabled="folderOps.isBusy(moveTarget.id)"
               @click="doMoveFolder"
             >
-              Move
+              {{ t('common.move') }}
             </LoadingButton>
           </div>
         </div>
@@ -934,22 +938,21 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="folderDeleteTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="mb-2 text-base font-semibold text-rose-700">Delete folder?</h3>
+          <h3 class="mb-2 text-base font-semibold text-rose-700">{{ t('storage.deleteFolderTitle') }}</h3>
           <p class="text-sm text-slate-600">
-            "<strong>{{ folderDeleteTarget.name }}</strong>" and everything inside it
-            ({{ folderDeleteTarget.child_count }} subfolders, {{ folderDeleteTarget.file_count }} files)
-            will be deleted. Files are removed from storage permanently.
+            "<strong>{{ folderDeleteTarget.name }}</strong>"
+            {{ t('storage.deleteFolderBody', { folders: formatNumber(folderDeleteTarget.child_count), files: formatNumber(folderDeleteTarget.file_count) }) }}
           </p>
           <div class="mt-5 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="folderDeleteTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="folderDeleteTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-danger"
-              loading-text="Deleting…"
+              :loading-text="t('common.deleting')"
               :loading="folderOps.isPending(folderDeleteTarget.id, 'delete')"
               :disabled="folderOps.isBusy(folderDeleteTarget.id)"
               @click="doDeleteFolder"
             >
-              Delete
+              {{ t('common.delete') }}
             </LoadingButton>
           </div>
         </div>
@@ -964,18 +967,18 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="fileRenameTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-4">Rename file</h3>
+          <h3 class="section-title mb-4">{{ t('storage.renameFile') }}</h3>
           <input v-model="fileRenameValue" class="input" type="text" maxlength="255" autofocus @keyup.enter="doRenameFile" />
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="fileRenameTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="fileRenameTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Renaming…"
+              :loading-text="t('common.renaming')"
               :loading="fileOps.isPending(fileRenameTarget.id, 'rename')"
               :disabled="!fileRenameValue.trim() || fileOps.isBusy(fileRenameTarget.id)"
               @click="doRenameFile"
             >
-              Rename
+              {{ t('common.rename') }}
             </LoadingButton>
           </div>
         </div>
@@ -990,21 +993,21 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="fileMoveTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">Move file</h3>
-          <p class="mb-4 truncate text-sm text-slate-500">"{{ fileMoveTarget.file_name }}" → destination</p>
+          <h3 class="section-title mb-1">{{ t('storage.moveFile') }}</h3>
+          <p class="mb-4 truncate text-sm text-slate-500">{{ t('storage.moveDestination', { name: fileMoveTarget.file_name }) }}</p>
           <select v-model="fileMoveFolderId" class="input">
             <option v-for="f in fileMoveOptions" :key="f.id" :value="f.id">{{ f.name }}</option>
           </select>
           <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="fileMoveTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="fileMoveTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
-              loading-text="Moving…"
+              :loading-text="t('common.moving')"
               :loading="fileOps.isPending(fileMoveTarget.id, 'move')"
               :disabled="!fileMoveFolderId || fileOps.isBusy(fileMoveTarget.id)"
               @click="doMoveFile"
             >
-              Move
+              {{ t('common.move') }}
             </LoadingButton>
           </div>
         </div>
@@ -1019,21 +1022,21 @@ function folderMenuId(f: StorageFolder): string {
         @click.self="fileDeleteTarget = null"
       >
         <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="mb-2 text-base font-semibold text-rose-700">Delete file?</h3>
+          <h3 class="mb-2 text-base font-semibold text-rose-700">{{ t('storage.deleteFileTitle') }}</h3>
           <p class="text-sm text-slate-600">
-            "<strong>{{ fileDeleteTarget.file_name }}</strong>" will be permanently removed from storage
-            ({{ fileDeleteTarget.version_count }} version{{ fileDeleteTarget.version_count === 1 ? '' : 's' }}).
+            "<strong>{{ fileDeleteTarget.file_name }}</strong>"
+            {{ tn(fileDeleteTarget.version_count, 'storage.deleteFileBodyOne', 'storage.deleteFileBodyOther') }}
           </p>
           <div class="mt-5 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="fileDeleteTarget = null">Cancel</button>
+            <button class="btn btn-secondary" @click="fileDeleteTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-danger"
-              loading-text="Deleting…"
+              :loading-text="t('common.deleting')"
               :loading="fileOps.isPending(fileDeleteTarget.id, 'delete')"
               :disabled="fileOps.isBusy(fileDeleteTarget.id)"
               @click="doDeleteFile"
             >
-              Delete
+              {{ t('common.delete') }}
             </LoadingButton>
           </div>
         </div>

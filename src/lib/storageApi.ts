@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { formatBytes as formatBytesLocalized, formatDateTime } from '../i18n'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -277,23 +278,14 @@ export function errorMessage(err: unknown, fallback = 'Request failed.'): string
 // Shared display helpers
 // ---------------------------------------------------------------------------
 
+/** Locale-aware size ("1.5 MB" / "1,5 MB"). */
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return formatBytesLocalized(bytes)
 }
 
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(String(iso).replace(' ', 'T') + (String(iso).includes('Z') ? '' : 'Z'))
   if (Number.isNaN(d.getTime())) return String(iso)
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTime(d) // locale-aware; parsing above is unchanged
 }

@@ -1,31 +1,33 @@
 import axios from 'axios'
-import { createRouter, createWebHistory } from 'vue-router'
+import { watch } from 'vue'
+import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
 import { authStore } from '../stores/auth'
+import { locale, t, type MessageKey } from '../i18n'
 
 const routes = [
   {
     path: '/login',
     name: 'login',
     component: () => import('../views/LoginView.vue'),
-    meta: { public: true },
+    meta: { public: true, titleKey: 'titles.login' },
   },
   {
     path: '/forgot-password',
     name: 'forgot-password',
     component: () => import('../views/ForgotPasswordView.vue'),
-    meta: { public: true },
+    meta: { public: true, titleKey: 'titles.forgotPassword' },
   },
   {
     path: '/reset-password',
     name: 'reset-password',
     component: () => import('../views/ResetPasswordView.vue'),
-    meta: { public: true },
+    meta: { public: true, titleKey: 'titles.resetPassword' },
   },
   {
     path: '/activate-account',
     name: 'activate-account',
     component: () => import('../views/ActivateAccountView.vue'),
-    meta: { public: true },
+    meta: { public: true, titleKey: 'titles.activateAccount' },
   },
   {
     path: '/',
@@ -43,37 +45,37 @@ const routes = [
         path: 'data-warrior',
         name: 'data-warrior',
         component: () => import('../views/DataWarriorView.vue'),
-        meta: { title: 'Data Warrior', permission: 'data_warrior.view' },
+        meta: { titleKey: 'nav.dataWarrior', permission: 'data_warrior.view' },
       },
       {
         path: 'number-rechecking',
         name: 'number-rechecking',
         component: () => import('../views/NumberRecheckingView.vue'),
-        meta: { title: 'Number Rechecking', permission: 'number_rechecking.view' },
+        meta: { titleKey: 'nav.numberRechecking', permission: 'number_rechecking.view' },
       },
       {
         path: 'number-rechecking/settings',
         name: 'number-rechecking-settings',
         component: () => import('../views/NumberRecheckingSettingsView.vue'),
-        meta: { title: 'Rechecker Settings', permission: 'number_rechecking.view' },
+        meta: { titleKey: 'nav.recheckerSettings', permission: 'number_rechecking.view' },
       },
       {
         path: 'access-management/roles',
         name: 'access-management-roles',
         component: () => import('../views/AccessManagementView.vue'),
-        meta: { title: 'Roles & Permissions', superAdminOnly: true },
+        meta: { titleKey: 'nav.rolesPermissions', superAdminOnly: true },
       },
       {
         path: 'access-management/accounts',
         name: 'access-management-accounts',
         component: () => import('../views/AccountManagementView.vue'),
-        meta: { title: 'Account Management', permission: 'account_management.view' },
+        meta: { titleKey: 'nav.accountManagement', permission: 'account_management.view' },
       },
       {
         path: 'audit-trail',
         name: 'audit-trail',
         component: () => import('../views/AuditTrailView.vue'),
-        meta: { title: 'Audit Trail', permission: 'audit_trail.view' },
+        meta: { titleKey: 'nav.auditTrail', permission: 'audit_trail.view' },
       },
     ],
   },
@@ -81,7 +83,7 @@ const routes = [
     path: '/no-access',
     name: 'no-access',
     component: () => import('../views/NoAccessView.vue'),
-    meta: { title: 'No access' },
+    meta: { titleKey: 'titles.noAccess' },
   },
   {
     path: '/:pathMatch(.*)*',
@@ -105,7 +107,7 @@ axios.interceptors.response.use(undefined, (error: unknown) => {
       authStore.clearSession()
       const current = router.currentRoute.value
       if (!current.meta.public) {
-        void router.replace({ name: 'login', query: { redirect: current.fullPath } })
+        void router.replace({ name: 'login', query: { redirect: current.fullPath, expired: '1' } })
       }
     }
   }
@@ -150,5 +152,13 @@ router.beforeEach(async (to) => {
   }
   return true
 })
+
+// Localized document title; re-applied when the language changes.
+function applyTitle(route: RouteLocationNormalized): void {
+  const key = route.meta.titleKey as MessageKey | undefined
+  document.title = key ? `${t(key)} · ${t('common.appName')}` : t('common.appName')
+}
+router.afterEach((to) => applyTitle(to))
+watch(locale, () => applyTitle(router.currentRoute.value))
 
 export default router

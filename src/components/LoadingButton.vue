@@ -15,6 +15,7 @@
  *   type="submit" for form submit buttons.
  */
 import { Loader2 } from 'lucide-vue-next'
+import { t } from '../i18n'
 
 const props = withDefaults(
   defineProps<{
@@ -49,7 +50,7 @@ const props = withDefaults(
       >
         <Loader2 :size="props.spinnerSize" class="shrink-0 animate-spin" aria-hidden="true" />
         <span v-if="props.loadingText">{{ props.loadingText }}</span>
-        <span v-else class="sr-only">Loading</span>
+        <span v-else class="sr-only">{{ t('common.loading') }}</span>
       </span>
     </span>
   </button>

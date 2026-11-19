@@ -13,6 +13,8 @@ import {
 } from 'lucide-vue-next'
 import axios from 'axios'
 import { useKeyedActions } from '../composables/useAsyncAction'
+import { formatDateTime, formatNumber, hasKey, locale, t, tn } from '../i18n'
+import { apiErrorMessage } from '../i18n/systemMessages'
 
 // --- types (mirror server/audit.js normalizeRecord) ---------------------------
 interface AuditActor {
@@ -85,7 +87,7 @@ const hasFilters = computed(
   () => Boolean(filters.from || filters.to || filters.userId || filters.module || filters.action || filters.result || search.value)
 )
 const dateError = computed(() =>
-  filters.from && filters.to && filters.from > filters.to ? 'Start date is after end date.' : ''
+  filters.from && filters.to && filters.from > filters.to ? t('audit.dateRangeInvalid') : ''
 )
 
 // --- helpers ----------------------------------------------------------------------
@@ -96,28 +98,25 @@ function dayStart(value: string, plusDays = 0): number {
 }
 
 function formatTime(iso: string | null): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime())
-    ? iso
-    : d.toLocaleString(undefined, {
-        year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-      })
+  return formatDateTime(iso, { seconds: true })
 }
 
 function actorName(a: AuditActor): string {
-  if (a.anonymous) return 'Anonymous'
-  return a.full_name || (a.username ? `@${a.username}` : `User #${a.id}`)
+  if (a.anonymous) return t('audit.anonymous')
+  return a.full_name || (a.username ? `@${a.username}` : t('audit.userNumber', { id: a.id ?? '?' }))
+}
+
+/** System module label; historical action/description data stays as recorded. */
+function moduleLabel(module: string, fallback: string): string {
+  const key = `audit.modules.${module}`
+  return hasKey(key) ? t(key) : fallback
 }
 
 function roleLabel(r: string): string {
   return r.replace(/_/g, ' ')
 }
 
-function errMsg(err: unknown, fallback: string): string {
-  const e = err as { response?: { data?: { message?: string } } }
-  return e.response?.data?.message || fallback
-}
+
 
 const MODULE_CHIP: Record<string, string> = {
   authentication: 'bg-sky-100 text-sky-700',
@@ -154,7 +153,7 @@ async function load(): Promise<void> {
     total.value = resp.data.total
   } catch (err) {
     if (seq !== requestSeq) return
-    error.value = errMsg(err, 'Could not load the audit trail.')
+    error.value = apiErrorMessage(err, 'audit.loadFailed')
     records.value = []
     total.value = 0
   } finally {
@@ -226,7 +225,7 @@ function openDetail(r: AuditRecord): void {
       const resp = await axios.get(`/api/audit-trail/${r.id}`)
       if (detail.value && detail.value.id === r.id) detail.value = resp.data.record
     } catch (err) {
-      if (detail.value && detail.value.id === r.id) detailError.value = errMsg(err, 'Could not load the record details.')
+      if (detail.value && detail.value.id === r.id) detailError.value = apiErrorMessage(err, 'audit.detailLoadFailed')
     }
   })
 }
@@ -241,9 +240,9 @@ interface DiffRow {
 function formatValue(v: unknown): string {
   if (v === undefined) return ''
   if (v === null) return '—'
-  if (Array.isArray(v)) return v.length ? v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') : '(none)'
+  if (Array.isArray(v)) return v.length ? v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') : t('audit.noneValue')
   if (typeof v === 'object') return JSON.stringify(v, null, 2)
-  if (typeof v === 'boolean') return v ? 'yes' : 'no'
+  if (typeof v === 'boolean') return v ? t('common.yes') : t('common.no')
   return String(v)
 }
 
@@ -290,18 +289,18 @@ const detailsJson = computed(() => {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="flex items-center gap-2 text-xl font-bold text-slate-900">
-          <ScrollText :size="22" class="text-indigo-600" /> Audit Trail
+          <ScrollText :size="22" class="text-indigo-600" /> {{ t('audit.title') }}
         </h1>
-        <p class="text-sm text-slate-500">Read-only history of security and business events</p>
+        <p class="text-sm text-slate-500">{{ t('audit.subtitle') }}</p>
       </div>
       <button
         class="btn btn-secondary"
-        title="Refresh"
+        :title="t('common.refresh')"
         :disabled="loading"
         :aria-busy="loading ? 'true' : undefined"
         @click="load"
       >
-        <RefreshCw :size="15" :class="{ 'animate-spin': loading }" /> Refresh
+        <RefreshCw :size="15" :class="{ 'animate-spin': loading }" /> {{ t('common.refresh') }}
       </button>
     </div>
 
@@ -313,52 +312,52 @@ const detailsJson = computed(() => {
           <input
             v-model="searchInput"
             class="input py-2 pl-9"
-            placeholder="Search user, description, action, resource ID…"
+            :placeholder="t('audit.searchPlaceholder')"
             maxlength="100"
           />
         </div>
         <button v-if="hasFilters" class="btn btn-ghost px-3 py-2 text-xs" @click="resetFilters">
-          <X :size="14" /> Clear filters
+          <X :size="14" /> {{ t('common.clearFilters') }}
         </button>
       </div>
       <div class="grid grid-cols-2 gap-2 lg:grid-cols-6">
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">From</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.from') }}</span>
           <input v-model="filters.from" type="date" class="input py-2" :max="filters.to || undefined" />
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">To</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.to') }}</span>
           <input v-model="filters.to" type="date" class="input py-2" :min="filters.from || undefined" />
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">User</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.user') }}</span>
           <select v-model="filters.userId" class="input py-2">
-            <option value="">All users</option>
+            <option value="">{{ t('audit.allUsers') }}</option>
             <option v-for="u in options.users" :key="u.id" :value="String(u.id)">
               {{ u.full_name }} (@{{ u.username }})
             </option>
           </select>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">Module</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.module') }}</span>
           <select v-model="filters.module" class="input py-2">
-            <option value="">All modules</option>
-            <option v-for="m in options.modules" :key="m.key" :value="m.key">{{ m.label }}</option>
+            <option value="">{{ t('audit.allModules') }}</option>
+            <option v-for="m in options.modules" :key="m.key" :value="m.key">{{ moduleLabel(m.key, m.label) }}</option>
           </select>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">Action</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.action') }}</span>
           <select v-model="filters.action" class="input py-2">
-            <option value="">All actions</option>
-            <option v-for="a in actionOptions" :key="a.action" :value="a.action">{{ a.action }} ({{ a.count }})</option>
+            <option value="">{{ t('audit.allActions') }}</option>
+            <option v-for="a in actionOptions" :key="a.action" :value="a.action">{{ a.action }} ({{ formatNumber(a.count) }})</option>
           </select>
         </label>
         <label class="block">
-          <span class="mb-1 block text-xs font-medium text-slate-500">Result</span>
+          <span class="mb-1 block text-xs font-medium text-slate-500">{{ t('audit.result') }}</span>
           <select v-model="filters.result" class="input py-2">
-            <option value="">Any result</option>
-            <option value="success">Success</option>
-            <option value="failure">Failure</option>
+            <option value="">{{ t('audit.anyResult') }}</option>
+            <option value="success">{{ t('audit.resultSuccess') }}</option>
+            <option value="failure">{{ t('audit.resultFailure') }}</option>
           </select>
         </label>
       </div>
@@ -379,7 +378,7 @@ const detailsJson = computed(() => {
         <Filter v-if="hasFilters" :size="36" class="text-slate-300" />
         <ScrollText v-else :size="36" class="text-slate-300" />
         <p class="mt-3 text-sm text-slate-500">
-          {{ hasFilters ? 'No audit records match these filters.' : 'No audit records yet.' }}
+          {{ hasFilters ? t('audit.noMatches') : t('audit.noRecords') }}
         </p>
       </div>
 
@@ -392,13 +391,13 @@ const detailsJson = computed(() => {
           <table class="w-full min-w-[880px] text-sm">
             <thead>
               <tr class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                <th class="px-3 py-2.5 font-semibold">Timestamp</th>
-                <th class="px-3 py-2.5 font-semibold">User</th>
-                <th class="px-3 py-2.5 font-semibold">Role</th>
-                <th class="px-3 py-2.5 font-semibold">Module</th>
-                <th class="px-3 py-2.5 font-semibold">Action</th>
-                <th class="px-3 py-2.5 font-semibold">Description</th>
-                <th class="px-3 py-2.5 font-semibold">IP address</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colTimestamp') }}</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colUser') }}</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colRole') }}</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colModule') }}</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colAction') }}</th>
+                <th class="px-3 py-2.5 font-semibold">{{ t('audit.colDescription') }}</th>
+                <th class="whitespace-nowrap px-3 py-2.5 font-semibold">{{ t('audit.colIp') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -416,7 +415,7 @@ const detailsJson = computed(() => {
                     {{ actorName(r.actor) }}
                   </p>
                   <p v-if="r.actor.username" class="text-xs text-slate-400">
-                    @{{ r.actor.username }}<span v-if="r.actor.deleted"> · deleted</span>
+                    @{{ r.actor.username }}<span v-if="r.actor.deleted"> · {{ t('audit.deletedSuffix') }}</span>
                   </p>
                 </td>
                 <td class="px-3 py-2.5">
@@ -426,12 +425,12 @@ const detailsJson = computed(() => {
                   </span>
                 </td>
                 <td class="px-3 py-2.5">
-                  <span class="chip whitespace-nowrap" :class="moduleChip(r.module)">{{ r.module_label }}</span>
+                  <span class="chip whitespace-nowrap" :class="moduleChip(r.module)">{{ moduleLabel(r.module, r.module_label) }}</span>
                 </td>
                 <td class="px-3 py-2.5">
                   <!-- line breaks only after dots: "auth." / "password_reset_requested" -->
                   <code class="text-xs text-slate-700"><template v-for="(part, i) in r.action.split('.')" :key="i"><wbr v-if="i" />{{ i ? '.' : '' }}{{ part }}</template></code>
-                  <span v-if="r.result === 'failure'" class="chip ml-1 bg-rose-100 text-rose-700">failed</span>
+                  <span v-if="r.result === 'failure'" class="chip ml-1 bg-rose-100 text-rose-700">{{ t('audit.failedChip') }}</span>
                 </td>
                 <td class="min-w-[200px] px-3 py-2.5 text-slate-700">{{ r.description }}</td>
                 <td class="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-slate-500">{{ r.ip_address || '—' }}</td>
@@ -443,14 +442,14 @@ const detailsJson = computed(() => {
         <!-- Pagination -->
         <div class="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
           <span class="text-slate-500">
-            {{ total.toLocaleString() }} record{{ total === 1 ? '' : 's' }} · page {{ page }} of {{ totalPages }}
+            {{ t('audit.pageSummary', { records: tn(total, 'audit.recordsOne', 'audit.recordsOther'), page: formatNumber(page), pages: formatNumber(totalPages) }) }}
           </span>
           <div class="flex gap-2">
             <button class="btn btn-secondary px-3 py-1.5" :disabled="page <= 1 || loading" @click="goPage(page - 1)">
-              <ChevronLeft :size="14" /> Prev
+              <ChevronLeft :size="14" /> {{ t('common.prev') }}
             </button>
             <button class="btn btn-secondary px-3 py-1.5" :disabled="page >= totalPages || loading" @click="goPage(page + 1)">
-              Next <ChevronRight :size="14" />
+              {{ t('common.next') }} <ChevronRight :size="14" />
             </button>
           </div>
         </div>
@@ -460,82 +459,82 @@ const detailsJson = computed(() => {
     <!-- Detail drawer -->
     <Teleport to="body">
       <div v-if="detail" class="fixed inset-0 z-50 flex justify-end bg-slate-900/60" @click.self="detail = null">
-        <div class="h-full w-full max-w-2xl overflow-auto bg-white p-5 shadow-2xl sm:p-6" role="dialog" aria-label="Audit record details">
+        <div class="h-full w-full max-w-2xl overflow-auto bg-white p-5 shadow-2xl sm:p-6" role="dialog" :aria-label="t('audit.detailsAria')">
           <div class="mb-4 flex items-start justify-between gap-3">
             <div class="min-w-0">
-              <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Audit record #{{ detail.id }}</p>
+              <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">{{ t('audit.recordTitle', { id: detail.id }) }}</p>
               <h3 class="mt-1 text-base font-semibold text-slate-900">{{ detail.description }}</h3>
               <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                <span class="chip" :class="moduleChip(detail.module)">{{ detail.module_label }}</span>
+                <span class="chip" :class="moduleChip(detail.module)">{{ moduleLabel(detail.module, detail.module_label) }}</span>
                 <code class="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700">{{ detail.action }}</code>
                 <span
                   class="chip"
                   :class="detail.result === 'failure' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'"
                 >
-                  {{ detail.result === 'failure' ? 'Failed' : 'Success' }}
+                  {{ detail.result === 'failure' ? t('audit.resultFailure') : t('audit.resultSuccess') }}
                 </span>
               </div>
             </div>
-            <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" aria-label="Close" @click="detail = null">
+            <button class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" :aria-label="t('common.close')" @click="detail = null">
               <X :size="18" />
             </button>
           </div>
 
           <div v-if="detailOps.isBusy(detail.id)" class="mb-3 flex items-center gap-2 text-xs text-slate-400">
-            <Loader2 :size="14" class="animate-spin" /> Loading full details…
+            <Loader2 :size="14" class="animate-spin" /> {{ t('audit.loadingDetails') }}
           </div>
           <p v-if="detailError" class="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{{ detailError }}</p>
 
           <dl class="grid grid-cols-1 gap-x-6 gap-y-3 rounded-xl border border-slate-200 p-4 text-sm sm:grid-cols-2">
             <div>
-              <dt class="text-xs text-slate-500">Timestamp</dt>
+              <dt class="text-xs text-slate-500">{{ t('audit.timestamp') }}</dt>
               <dd class="text-slate-800">{{ formatTime(detail.created_at) }}</dd>
             </div>
             <div>
-              <dt class="text-xs text-slate-500">Actor</dt>
+              <dt class="text-xs text-slate-500">{{ t('audit.actor') }}</dt>
               <dd class="text-slate-800">
                 {{ actorName(detail.actor) }}
                 <span v-if="detail.actor.username" class="text-slate-400">(@{{ detail.actor.username }}{{ detail.actor.id ? ` · #${detail.actor.id}` : '' }})</span>
-                <span v-if="detail.actor.deleted" class="ml-1 text-xs text-rose-500">account deleted</span>
+                <span v-if="detail.actor.deleted" class="ml-1 text-xs text-rose-500">{{ t('audit.accountDeleted') }}</span>
               </dd>
             </div>
             <div>
               <dt class="text-xs text-slate-500">
-                Role{{ detail.actor.roles_are_current && detail.actor.roles.length ? ' (current — not recorded at the time)' : ' at the time' }}
+                {{ detail.actor.roles_are_current && detail.actor.roles.length ? t('audit.roleCurrent') : t('audit.roleAtTime') }}
               </dt>
               <dd class="capitalize text-slate-800">{{ detail.actor.roles.map(roleLabel).join(', ') || '—' }}</dd>
             </div>
             <div>
-              <dt class="text-xs text-slate-500">Resource</dt>
+              <dt class="text-xs text-slate-500">{{ t('audit.resource') }}</dt>
               <dd class="text-slate-800">
                 {{ detail.entity_type }}<span v-if="detail.resource_id"> #{{ detail.resource_id }}</span>
               </dd>
             </div>
             <div>
-              <dt class="text-xs text-slate-500">IP address</dt>
+              <dt class="text-xs text-slate-500">{{ t('audit.ipAddress') }}</dt>
               <dd class="font-mono text-xs text-slate-800">{{ detail.ip_address || '—' }}</dd>
             </div>
             <div class="sm:col-span-2">
-              <dt class="text-xs text-slate-500">User agent</dt>
-              <dd class="break-all text-xs text-slate-700">{{ detail.user_agent || (detail.format === 1 ? 'Not recorded (older entry)' : '—') }}</dd>
+              <dt class="text-xs text-slate-500">{{ t('audit.userAgent') }}</dt>
+              <dd class="break-all text-xs text-slate-700">{{ detail.user_agent || (detail.format === 1 ? t('audit.userAgentOlder') : '—') }}</dd>
             </div>
           </dl>
 
           <!-- Before / after -->
           <div class="mt-5">
             <h4 class="mb-2 text-sm font-semibold text-slate-800">
-              {{ diffMode === 'created' ? 'New values' : diffMode === 'removed' ? 'Removed values' : 'Changes' }}
+              {{ diffMode === 'created' ? t('audit.newValues') : diffMode === 'removed' ? t('audit.removedValues') : t('audit.changes') }}
             </h4>
             <p v-if="diffMode === 'none'" class="rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
-              No data change recorded for this event.
+              {{ t('audit.noChange') }}
             </p>
             <div v-else class="overflow-x-auto rounded-xl border border-slate-200">
               <table class="w-full min-w-[480px] text-sm">
                 <thead>
                   <tr class="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                    <th class="w-1/4 px-3 py-2 font-semibold">Field</th>
-                    <th v-if="diffMode !== 'created'" class="px-3 py-2 font-semibold">Before</th>
-                    <th v-if="diffMode !== 'removed'" class="px-3 py-2 font-semibold">After</th>
+                    <th class="w-1/4 px-3 py-2 font-semibold">{{ t('audit.field') }}</th>
+                    <th v-if="diffMode !== 'created'" class="px-3 py-2 font-semibold">{{ t('audit.before') }}</th>
+                    <th v-if="diffMode !== 'removed'" class="px-3 py-2 font-semibold">{{ t('audit.after') }}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -566,12 +565,15 @@ const detailsJson = computed(() => {
 
           <!-- Extra details -->
           <div v-if="detailsJson" class="mt-5">
-            <h4 class="mb-2 text-sm font-semibold text-slate-800">Additional details</h4>
+            <h4 class="mb-2 text-sm font-semibold text-slate-800">{{ t('audit.additionalDetails') }}</h4>
             <pre class="overflow-x-auto rounded-xl bg-slate-900 p-3 text-xs text-slate-100">{{ detailsJson }}</pre>
           </div>
 
-          <p class="mt-5 text-xs text-slate-400">
-            Audit records are read-only. Sensitive values (passwords, tokens, secrets) are never stored or shown.
+          <p v-if="locale !== 'en'" class="mt-5 text-xs text-slate-400">
+            {{ t('audit.descriptionAsRecorded') }}
+          </p>
+          <p class="mt-2 text-xs text-slate-400">
+            {{ t('audit.readOnlyNote') }}
           </p>
         </div>
       </div>
