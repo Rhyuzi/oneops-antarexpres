@@ -63,7 +63,7 @@ const MODULE_LABELS = {
   access_management: "Access Management",
   data_warrior: "Data Warrior",
   number_rechecking: "Number Rechecking",
-  loader: "Kodepos Loader",
+  loader: "3PL Loader",
   system: "System",
   other: "Other",
 };

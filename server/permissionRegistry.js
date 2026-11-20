@@ -203,7 +203,7 @@ const PERMISSIONS = [
     module: "loader",
     feature: "Access module",
     action: "view",
-    description: "Open the Kodepos Loader page",
+    description: "Open the 3PL Loader page",
   },
   {
     key: "loader.run",
@@ -252,7 +252,7 @@ const MODULE_LABELS = {
   access_management: "Access Management",
   account_management: "Account Management",
   audit_trail: "Audit Trail",
-  loader: "Kodepos Loader",
+  loader: "3PL Loader",
 };
 
 function isValidKey(key) {

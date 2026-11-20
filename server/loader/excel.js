@@ -121,7 +121,7 @@ function cellValue(header, value) {
 /** Builds the styled output workbook; returns a Buffer. */
 async function writeLoaderWorkbook(headers, rows, { sheetName = "Sheet1" } = {}) {
   const wb = new ExcelJS.Workbook();
-  wb.creator = "OneOps — Kodepos Loader";
+  wb.creator = "OneOps — 3PL Loader";
   wb.created = new Date();
   const ws = wb.addWorksheet(sheetName);
 

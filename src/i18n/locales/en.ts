@@ -65,7 +65,7 @@ export const en = {
     recheckerSettings: 'Rechecker Settings',
     rolesPermissions: 'Roles & Permissions',
     accountManagement: 'Account Management',
-    kodeposLoader: 'Kodepos Loader',
+    kodeposLoader: '3PL Loader',
     auditTrail: 'Audit Trail',
     collapse: 'Collapse',
     expandSidebar: 'Expand sidebar',
@@ -309,7 +309,7 @@ export const en = {
       access_management: 'Access Management',
       account_management: 'Account Management',
       audit_trail: 'Audit Trail',
-      loader: 'Kodepos Loader',
+      loader: '3PL Loader',
     },
     actions: {
       view: 'view',
@@ -359,7 +359,7 @@ export const en = {
         view: { feature: 'Access module', description: 'View the audit trail and audit record details (read-only)' },
       },
       loader: {
-        view: { feature: 'Access module', description: 'Open the Kodepos Loader page' },
+        view: { feature: 'Access module', description: 'Open the 3PL Loader page' },
         run: { feature: 'Process loader files', description: 'Upload the 3PL template + rechecked Excel and download the loader file' },
         manage_reference: { feature: 'Manage kodepos reference', description: 'Import / update the kecamatan → kodepos reference (kebutuhan_loader)' },
         recheck: { feature: 'Recheck numbers via API', description: 'Run the loader in API mode: look up every Resi at SiCepat with the user\'s rechecker token' },
@@ -519,7 +519,7 @@ export const en = {
   },
 
   loader: {
-    title: 'Kodepos Loader',
+    title: '3PL Loader',
     subtitle: 'Turn the 3PL template + rechecked numbers into a ready-to-upload loader file',
     processCard: 'Process files',
     templateFile: '3PL template (.xlsx)',

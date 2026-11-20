@@ -85,7 +85,7 @@ async function main() {
   })
   await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable'); await send('DOM.enable')
   await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true })
-  console.log(`Kodepos Loader browser E2E against ${BASE}\n`)
+  console.log(`3PL Loader browser E2E against ${BASE}\n`)
 
   await send('Page.navigate', { url: BASE + '/login' })
   await waitFor(`!!document.querySelector('#username')`, 'login page')
