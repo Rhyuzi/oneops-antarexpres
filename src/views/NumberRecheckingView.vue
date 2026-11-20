@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { store } from '../store'
+import { authStore } from '../stores/auth'
 import StatCard from '../components/StatCard.vue'
 import UploadZone from '../components/UploadZone.vue'
 import ResultsTable from '../components/ResultsTable.vue'
@@ -79,8 +80,12 @@ const filtered = computed(() => {
 })
 
 const hasCredentials = computed(() => store.hasCredentials())
+// Permission gates (the server also enforces number_rechecking.run on every
+// lookup; export is produced in the browser, so the button is the gate).
+const canRun = computed(() => authStore.can('number_rechecking.run'))
+const canExport = computed(() => authStore.can('number_rechecking.export'))
 const canStart = computed(
-  () => store.state.records.length > 0 && hasCredentials.value && !store.state.running
+  () => canRun.value && store.state.records.length > 0 && hasCredentials.value && !store.state.running
 )
 
 const statusOptions: Array<{ value: RecordStatus | 'all'; label: MessageKey }> = [
@@ -111,7 +116,7 @@ const uploadErrorText = computed(() => {
           <span v-if="hasCredentials" class="ml-1 font-medium text-emerald-600">{{ t('rechecker.credentialsConfigured') }}</span>
         </p>
       </div>
-      <router-link class="btn btn-secondary" to="/ops/number-rechecking/settings">
+      <router-link v-if="canRun" class="btn btn-secondary" to="/ops/number-rechecking/settings">
         <Settings :size="16" /> {{ t('rechecker.settings') }}
       </router-link>
     </div>
@@ -139,7 +144,7 @@ const uploadErrorText = computed(() => {
         <Settings2 :size="20" />
         <span>{{ t('rechecker.configureNotice') }}</span>
       </div>
-      <router-link class="btn btn-secondary shrink-0" to="/ops/number-rechecking/settings">
+      <router-link v-if="canRun" class="btn btn-secondary shrink-0" to="/ops/number-rechecking/settings">
         {{ t('rechecker.openSettings') }}
       </router-link>
     </div>
@@ -165,7 +170,13 @@ const uploadErrorText = computed(() => {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="section-title">{{ t('rechecker.processing') }}</h2>
         <div class="flex flex-wrap items-center gap-2">
-          <button v-if="!store.state.running" class="btn btn-primary" :disabled="!canStart" @click="store.startProcessing()">
+          <button
+            v-if="!store.state.running"
+            class="btn btn-primary"
+            :disabled="!canStart"
+            :title="canRun ? undefined : t('rechecker.noRunPermission')"
+            @click="store.startProcessing()"
+          >
             <Play :size="18" /> {{ t('rechecker.startProcessing') }}
           </button>
           <template v-else>
@@ -259,6 +270,7 @@ const uploadErrorText = computed(() => {
             </option>
           </select>
           <LoadingButton
+            v-if="canExport"
             class="btn btn-primary"
             :loading-text="t('rechecker.exporting')"
             :spinner-size="18"

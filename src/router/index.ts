@@ -57,7 +57,14 @@ const routes = [
         path: 'number-rechecking/settings',
         name: 'number-rechecking-settings',
         component: () => import('../views/NumberRecheckingSettingsView.vue'),
-        meta: { titleKey: 'nav.recheckerSettings', permission: 'number_rechecking.view' },
+        // Token settings only matter for running lookups.
+        meta: { titleKey: 'nav.recheckerSettings', permission: 'number_rechecking.run' },
+      },
+      {
+        path: 'kodepos-loader',
+        name: 'kodepos-loader',
+        component: () => import('../views/KodeposLoaderView.vue'),
+        meta: { titleKey: 'nav.kodeposLoader', permission: 'loader.view' },
       },
       {
         path: 'access-management/roles',
@@ -145,6 +152,7 @@ router.beforeEach(async (to) => {
     if (to.meta.superAdminOnly !== true) {
       if (auth.can('data_warrior.view')) return { name: 'data-warrior' }
       if (auth.can('number_rechecking.view')) return { name: 'number-rechecking' }
+      if (auth.can('loader.view')) return { name: 'kodepos-loader' }
       if (auth.can('account_management.view')) return { name: 'access-management-accounts' }
       if (auth.can('audit_trail.view')) return { name: 'audit-trail' }
     }

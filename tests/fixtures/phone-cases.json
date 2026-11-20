@@ -1,0 +1,23 @@
+{
+  "description": "Shared vectors for server/recheck/phone.js AND src/lib/phone.ts (tests/test-phone.js). Synthetic numbers only.",
+  "cases": [
+    { "input": "081234567890", "value": "6281234567890", "valid": true },
+    { "input": "81234567890", "value": "6281234567890", "valid": true },
+    { "input": "+62 812-3456-7890", "value": "6281234567890", "valid": true },
+    { "input": "62081234567890", "value": "6281234567890", "valid": true },
+    { "input": "6208123456789", "value": "628123456789", "valid": true },
+    { "input": "0062 812 3456 7890", "value": "6281234567890", "valid": true },
+    { "input": "(0812) 3456.7890", "value": "6281234567890", "valid": true },
+    { "input": "6281234567890", "value": "6281234567890", "valid": true },
+    { "input": 6281234567890, "value": "6281234567890", "valid": true },
+    { "input": "62812345678901", "value": "62812345678901", "valid": true },
+    { "input": "", "value": "", "valid": false, "issue": "empty" },
+    { "input": "-", "value": "", "valid": false, "issue": "empty" },
+    { "input": null, "value": "", "valid": false, "issue": "empty" },
+    { "input": 16431, "value": "16431", "valid": false, "issue": "invalid" },
+    { "input": "622112345678", "value": "622112345678", "valid": false, "issue": "invalid" },
+    { "input": "62812345", "value": "62812345", "valid": false, "issue": "invalid" },
+    { "input": "628123456789012345", "value": "628123456789012345", "valid": false, "issue": "invalid" },
+    { "input": "tidak ada", "value": "", "valid": false, "issue": "empty" }
+  ]
+}

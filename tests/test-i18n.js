@@ -111,6 +111,9 @@ test("untranslated (identical) values are only product names / technical terms",
     "OneOps", "AntarXpress", "OneOps — AntarXpress", "Data Warrior", "—", "Status", "Email",
     "Bearer Token", "X-Permission-Token", "User ID", "AWB", "Total AWB", "Super Admin", "Root",
     "{name}: {status}.", '"{name}": {error}', "User agent", ", ", "Folder", "{count} folder",
+    // Loader business terms used as-is in Indonesian operations
+    "Cust ID Non-COD (N)", "Cust ID COD (Y)", "COD (Y)", "Non-COD (N)", "master",
+    "Template", "Mode", "manual", "Kota_Tujuan", "Kota_Tujuan → wilayah",
   ]);
   const same = Object.keys(enLeaves).filter((k) => enLeaves[k] === idLeaves[k] && !ALLOWED.has(enLeaves[k]));
   assert.deepStrictEqual(same, [], `identical values need translation or an ALLOWED entry: ${same.join(", ")}`);
@@ -192,6 +195,26 @@ const DYNAMIC_SAMPLES = [
   "Password must contain at least 8 characters, an uppercase letter, a symbol.",
   "Start date is after end date.",
   "Invalid pageSize.",
+  // Kodepos loader (thrown LoaderInputError / badRequest messages)
+  "The 3PL template is missing required columns: Berat Asli, Biaya.",
+  "The 3PL template has no data rows.",
+  "Both cust IDs (COD and Non-COD) are required.",
+  "Cust ID must be a number (digits only, max 15).",
+  "The COD and Non-COD cust IDs must be different.",
+  "The kodepos reference (kebutuhan_loader) is empty. Import the master file first.",
+  'The file "x.xlsx" could not be read as Excel.',
+  'No sheet in "x.xlsx" has the required columns: Resi, No HP Penerima.',
+  "The template file is required.",
+  "The rechecked file must be an .xlsx or .xls file.",
+  "The master file is empty.",
+  "The template file exceeds the 10 MB limit.",
+  "No kecamatan/kodepos rows were found. Each sheet needs a header row: Kecamatan | Kode Pos.",
+  // Loader jobs / settings (thrown via httpError/badRequest or settings module)
+  "You already have a loader recheck job running. Wait for it to finish or cancel it.",
+  "Too many AWBs for one job (max 3000). Split the template.",
+  "Kota_Tujuan must be at least 3 characters.",
+  "Unknown wilayah — it must exist in the kodepos reference.",
+  "Authorization failed — token is invalid or expired.",
 ];
 
 test("every static server message is recognised", () => {

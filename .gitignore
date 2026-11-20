@@ -6,3 +6,5 @@ dist/
 .env
 .env.local
 .env.*.local
+# Local sample/working files (contain customer data — never commit)
+tmp/

@@ -197,6 +197,43 @@ const PERMISSIONS = [
     description: "Delete user accounts (blocked for last super admin)",
   },
 
+  // --- Automation Loader Kodepos ------------------------------------------------
+  {
+    key: "loader.view",
+    module: "loader",
+    feature: "Access module",
+    action: "view",
+    description: "Open the Kodepos Loader page",
+  },
+  {
+    key: "loader.run",
+    module: "loader",
+    feature: "Process loader files",
+    action: "create",
+    description: "Upload the 3PL template + rechecked Excel and download the loader file",
+  },
+  {
+    key: "loader.manage_reference",
+    module: "loader",
+    feature: "Manage kodepos reference",
+    action: "manage",
+    description: "Import / update the kebutuhan_loader kecamatan → kodepos reference",
+  },
+  {
+    key: "loader.recheck",
+    module: "loader",
+    feature: "Recheck numbers via API",
+    action: "create",
+    description: "Run the loader in API mode: look up every Resi at SiCepat with the user's rechecker token",
+  },
+  {
+    key: "loader.manage_settings",
+    module: "loader",
+    feature: "Manage loader settings",
+    action: "manage",
+    description: "Edit the Kota_Tujuan → wilayah mapping and view all loader jobs",
+  },
+
   // --- Audit Trail (read-only by design: no create/edit/delete keys) ----------
   {
     key: "audit_trail.view",
@@ -215,6 +252,7 @@ const MODULE_LABELS = {
   access_management: "Access Management",
   account_management: "Account Management",
   audit_trail: "Audit Trail",
+  loader: "Kodepos Loader",
 };
 
 function isValidKey(key) {

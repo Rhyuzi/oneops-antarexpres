@@ -171,6 +171,7 @@ async function main() {
     ['/ops/access-management/roles', 'access.subtitle'],
     ['/ops/access-management/accounts', 'accounts.subtitle'],
     ['/ops/audit-trail', 'audit.subtitle'],
+    ['/ops/kodepos-loader', 'loader.subtitle'],
   ]
   for (const [path, key] of pages) {
     await test(`${path}: fully Indonesian, labels fit`, async () => {

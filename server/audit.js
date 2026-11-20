@@ -63,6 +63,7 @@ const MODULE_LABELS = {
   access_management: "Access Management",
   data_warrior: "Data Warrior",
   number_rechecking: "Number Rechecking",
+  loader: "Kodepos Loader",
   system: "System",
   other: "Other",
 };
@@ -82,6 +83,7 @@ const MODULE_RULES = [
   ["file.*", "data_warrior"],
   ["permission.*", "data_warrior"],
   ["recheck.*", "number_rechecking"],
+  ["loader.*", "loader"],
   ["smtp.*", "system"],
 ].map(([pattern, module]) => ({
   prefix: pattern.endsWith("*"),
@@ -260,6 +262,18 @@ function describe(action, d, entityId) {
     case "file.move": return `Moved file "${x.file_name || entityId}"`;
     case "file.delete": return `Deleted file "${x.file_name || entityId}"`;
     case "recheck.credentials_rejected": return `SiCepat rejected the configured credentials (HTTP ${x.upstream_status || "?"})`;
+    case "loader.processed": return `Generated loader file${x.template ? ` from "${x.template}"` : ""}${x.rows ? ` (${x.rows} rows)` : ""}`;
+    case "loader.process_failed": return `Loader processing failed (${String(x.reason || "invalid input").replace(/_/g, " ")})`;
+    case "loader.reference_imported": return `Imported kodepos reference${x.file ? ` "${x.file}"` : ""}`;
+    case "loader.job_started": return `Started loader API recheck${x.template ? ` for "${x.template}"` : ""}${x.awb_total ? ` (${x.awb_total} AWB)` : ""}`;
+    case "loader.job_completed": return `Loader API recheck finished${x.template ? ` for "${x.template}"` : ""} (${x.awb_success || 0}/${x.awb_total || 0} numbers found)`;
+    case "loader.job_paused": return "Loader API recheck paused — SiCepat rejected the token";
+    case "loader.job_resumed": return "Loader API recheck resumed with a new token";
+    case "loader.job_cancelled": return "Loader API recheck cancelled";
+    case "loader.job_failed": return `Loader API recheck failed (${String(x.reason || "error").replace(/_/g, " ")})`;
+    case "loader.kota_mapping_created": return `Mapped Kota_Tujuan "${x.kota || "?"}" to a wilayah`;
+    case "loader.kota_mapping_updated": return `Changed the wilayah of Kota_Tujuan "${x.kota || "?"}"`;
+    case "loader.kota_mapping_deleted": return `Removed the wilayah mapping of Kota_Tujuan "${x.kota || "?"}"`;
     case "smtp.verify": return `Verified SMTP connection (${x.ok ? "ok" : "failed"})`;
     case "smtp.test_email": return `Sent SMTP test email${x.recipient ? ` to ${x.recipient}` : ""} (${x.result || "?"})`;
     default: return String(action || "").replace(/[._]/g, " ");

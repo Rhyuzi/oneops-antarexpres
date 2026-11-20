@@ -5,6 +5,7 @@ import {
   Database,
   ScanSearch,
   ScrollText,
+  Wand2,
   ShieldCheck,
   Users,
   LogOut,
@@ -61,6 +62,7 @@ const navGroups = computed(() => {
       items: [
         { name: 'data-warrior', label: 'nav.dataWarrior', icon: Database, permission: 'data_warrior.view' },
         { name: 'number-rechecking', label: 'nav.numberRechecking', icon: ScanSearch, permission: 'number_rechecking.view' },
+        { name: 'kodepos-loader', label: 'nav.kodeposLoader', icon: Wand2, permission: 'loader.view' },
       ],
     },
   ]

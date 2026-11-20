@@ -1,5 +1,6 @@
 import type { ProcessingConfig, Settings, TrackingRecord } from '../types'
 import { fetchPhone } from './api'
+import { normalizePhone as normalizePhoneRule } from './phone'
 
 export type ProcessOutcome =
   | { action: 'continue' }
@@ -20,9 +21,10 @@ function backoffDelay(attempt: number, status: number): number {
   return Math.min(30000, base * Math.pow(2, attempt - 1))
 }
 
+/** Shared rule (src/lib/phone.ts ⇔ server/recheck/phone.js): '' unless a valid 628… number. */
 export function normalizePhone(value: string): string {
-  const cleaned = value.replace(/[\s\-()]/g, '')
-  return /^\+?\d{6,}$/.test(cleaned) ? cleaned : ''
+  const phone = normalizePhoneRule(value)
+  return phone.valid ? phone.value : ''
 }
 
 function isRetryableStatus(status: number): boolean {

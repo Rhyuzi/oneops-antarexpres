@@ -27,13 +27,18 @@ const accessManagementRouter = require("./routes/accessManagement");
 const accountsRouter = require("./routes/accounts");
 const emailAdminRouter = require("./routes/emailAdmin");
 const auditTrailRouter = require("./routes/auditTrail");
+const loaderRouter = require("./routes/loader");
 const { auditHealth } = require("./audit");
 
 const app = express();
 const PORT = config.port;
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1mb" }));
+// JSON bodies: 1 MB everywhere, except the loader (two Excel files as base64),
+// whose larger parser runs only AFTER auth + permission checks (see below),
+// so anonymous clients can never make the server parse large bodies.
+const jsonDefault = express.json({ limit: "1mb" });
+app.use((req, res, next) => (req.path.startsWith("/api/loader/") ? next() : jsonDefault(req, res, next)));
 
 // The frontend is served same-origin (Vite dev proxy / production static),
 // so permissive CORS is unnecessary — removed from the original proxy.
@@ -92,6 +97,8 @@ app.use("/api/accounts", auth.requireAuth, accountsRouter);
 app.use("/api/admin/email", auth.requireAuth, requireSuperAdminStrict, emailAdminRouter);
 // Audit Trail: read-only; audit_trail.view (super_admin via canonical bypass).
 app.use("/api/audit-trail", auth.requireAuth, requirePermission("audit_trail.view"), auditTrailRouter);
+// Automation Loader Kodepos: loader.view (+ loader.run / loader.manage_reference per route).
+app.use("/api/loader", auth.requireAuth, requirePermission("loader.view"), express.json({ limit: "30mb" }), loaderRouter);
 // Number Rechecking proxy. Its auth + module gates live ON the /awb-detail
 // route inside the router — never put middleware on a bare "/api" mount,
 // or it runs for every /api/* request (that bug blocked password reset).
@@ -137,6 +144,9 @@ async function start() {
   if (auth.loginEnabled()) {
     await auth.bootstrapAdminIfEmpty();
   }
+  // Loader API jobs live in memory: any left "running"/"paused" by a previous
+  // process can't continue → mark them interrupted (history stays accurate).
+  await require("./loader/jobs").markInterruptedJobs();
 
   app.listen(PORT, () => {
     console.log(`[oneops] backend listening on http://localhost:${PORT}`);

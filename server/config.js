@@ -85,6 +85,15 @@ const config = {
     secureCookies: bool(env.SESSION_SECURE_COOKIES, env.NODE_ENV === "production"),
   },
 
+  // --- Loader API recheck (server-side SiCepat queue) -----------------------
+  // Clamped again in server/recheck/queue.js (concurrency 1–3, retries 0–5).
+  loader: {
+    recheckConcurrency: int(env.LOADER_RECHECK_CONCURRENCY, 2),
+    recheckDelayMs: int(env.LOADER_RECHECK_DELAY_MS, 400),
+    recheckMaxRetries: int(env.LOADER_RECHECK_MAX_RETRIES, 3),
+    maxAwbPerJob: int(env.LOADER_MAX_AWB_PER_JOB, 3000),
+  },
+
   // --- Bootstrap admin ------------------------------------------------------
   // If the users table is empty at startup and this password is set, an
   // 'admin' super_admin account is created automatically.

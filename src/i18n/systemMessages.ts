@@ -100,6 +100,27 @@ const EXACT: Record<string, MessageKey> = {
   'Start date is after end date': 'errors.server.startAfterEnd',
   'Account created, but SMTP is not configured — invitation not sent': 'errors.server.accountCreatedNoSmtp',
   'Could not load the audit trail': 'audit.loadFailed',
+  // Kodepos loader (server/loader/*, server/routes/loader.js)
+  'The 3PL template has no data rows': 'errors.server.loaderNoRows',
+  'Both cust IDs (COD and Non-COD) are required': 'errors.server.loaderCustIdRequired',
+  'Cust ID must be a number (digits only, max 15)': 'errors.server.loaderCustIdInvalid',
+  'The COD and Non-COD cust IDs must be different': 'errors.server.loaderCustIdSame',
+  'The kodepos reference (kebutuhan_loader) is empty. Import the master file first': 'errors.server.loaderReferenceEmpty',
+  'The kodepos reference table is not installed. Run database/migrations/010_kebutuhan_loader.sql': 'errors.server.loaderTableMissing',
+  'The loader could not process the files': 'errors.server.loaderFailed',
+  'This download has expired. Process the files again': 'errors.server.loaderDownloadExpired',
+  'No kecamatan/kodepos rows were found. Each sheet needs a header row: Kecamatan | Kode Pos': 'errors.server.loaderNoReferenceRows',
+  'Method not allowed': 'errors.server.methodNotAllowed',
+  'You already have a loader recheck job running. Wait for it to finish or cancel it': 'errors.server.loaderJobRunning',
+  'The template did not pass the pre-check': 'errors.server.loaderPrecheckFailed',
+  'Review the pre-check warnings and confirm to continue': 'errors.server.loaderPrecheckWarnings',
+  'Loader job not found': 'errors.server.loaderJobNotFound',
+  'Only paused jobs can be resumed': 'errors.server.loaderOnlyPausedResume',
+  'This job can no longer be cancelled': 'errors.server.loaderJobNotCancellable',
+  'Loader settings are not installed. Run database/migrations/011_loader_jobs_kota_wilayah.sql': 'errors.server.loaderSettingsMissing',
+  'Kota_Tujuan must be at least 3 characters': 'errors.server.loaderKotaInvalid',
+  'Unknown wilayah — it must exist in the kodepos reference': 'errors.server.loaderWilayahUnknown',
+  'Mapping not found': 'errors.server.loaderMappingNotFound',
   // Auth store (src/stores/auth.ts) — kept in English in state, shown localized
   'Login failed': 'auth.loginFailed',
   'Could not verify your session. Check your connection and try again': 'auth.sessionCheckFailed',
@@ -152,7 +173,20 @@ const PATTERNS: Pattern[] = [
   { re: /^Request failed \(HTTP (\d+)\)$/, key: 'errors.rechecker.requestFailedStatus', params: (m) => ({ status: m[1] }) },
   { re: /^Worksheet "(.+)" not found$/, key: 'errors.rechecker.worksheetNotFound', params: (m) => ({ name: m[1] }) },
   { re: /^Storage rejected the upload \(HTTP (\d+)\)$/, key: 'errors.storage.uploadRejected', params: (m) => ({ status: m[1] }) },
+  // Kodepos loader
+  { re: /^Too many AWBs for one job \(max (\d+)\)\. Split the template$/, key: 'errors.server.loaderTooManyAwb', params: (m) => ({ max: m[1] }) },
+  { re: /^The 3PL template is missing required columns: (.+)$/, key: 'errors.server.loaderMissingColumns', params: (m) => ({ columns: m[1] }) },
+  { re: /^The file "(.+)" could not be read as Excel$/, key: 'errors.server.loaderUnreadable', params: (m) => ({ name: m[1] }) },
+  { re: /^No sheet in "(.+)" has the required columns: (.+)$/, key: 'errors.server.loaderHeadersNotFound', params: (m) => ({ name: m[1], columns: m[2] }) },
+  { re: /^The (template|rechecked|master) file is required$/, key: 'errors.server.loaderFileRequired', params: (m) => ({ label: fileLabel(m[1]) }) },
+  { re: /^The (template|rechecked|master) file must be an \.xlsx or \.xls file$/, key: 'errors.server.loaderFileType', params: (m) => ({ label: fileLabel(m[1]) }) },
+  { re: /^The (template|rechecked|master) file is empty$/, key: 'errors.server.loaderFileEmpty', params: (m) => ({ label: fileLabel(m[1]) }) },
+  { re: /^The (template|rechecked|master) file exceeds the 10 MB limit$/, key: 'errors.server.loaderFileTooLarge', params: (m) => ({ label: fileLabel(m[1]) }) },
 ]
+
+function fileLabel(kind: string): string {
+  return t(`loader.fileLabels.${kind}` as MessageKey)
+}
 
 const PW_RULES: Array<{ re: RegExp; key: MessageKey }> = [
   { re: /^at least (\d+) characters$/, key: 'errors.server.pwRuleLength' },

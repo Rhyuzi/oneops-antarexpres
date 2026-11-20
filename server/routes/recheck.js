@@ -11,10 +11,10 @@
  */
 
 const express = require("express");
-const axios = require("axios");
 const { requireAuth } = require("../auth");
 const { requirePermission } = require("../modulePermissions");
 const { logAudit } = require("../audit");
+const { lookupAwb, credentialsFromRequest, isAuthStatus } = require("../recheck/sicepatClient");
 
 const router = express.Router();
 
@@ -40,89 +40,29 @@ function auditCredentialRejection(req, upstreamStatus) {
   });
 }
 
-const SICEPAT_BASE_URL =
-  (process.env.SICEPAT_BASE_URL || "https://podapi.sicepat.com/")
-    .trim()
-    .replace(/\/+$/, "") + "/";
-const SICEPAT_URL = `${SICEPAT_BASE_URL}web/v1/tracking/awbDetail`;
-
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function headerString(value) {
-  if (Array.isArray(value)) return value[0] || "";
-  return typeof value === "string" ? value : "";
-}
-
 router.post("/awb-detail", requireAuth, requirePermission("number_rechecking.run"), async (req, res) => {
   const body = req.body || {};
   const awbNumber = body.awb_number;
-  const userId = body.user_id;
+  const creds = credentialsFromRequest(req, "user_id");
 
-  const bearerToken = (() => {
-    const m = headerString(req.headers.authorization).match(/^Bearer\s+(.+)$/i);
-    return m ? m[1].trim() : "";
-  })();
-  const permissionToken = headerString(req.headers["x-permission-token"]);
-
-  if (!isNonEmptyString(bearerToken) || !isNonEmptyString(permissionToken)) {
+  if (!creds) {
     return res.status(400).json({
       ok: false,
       status: 400,
       message: "Missing SiCepat credentials. Configure them in Settings.",
     });
   }
-  if (!isNonEmptyString(awbNumber)) {
+  if (typeof awbNumber !== "string" || !awbNumber.trim()) {
     return res.status(400).json({ ok: false, status: 400, message: "Missing AWB number." });
   }
 
-  try {
-    const response = await axios.post(
-      SICEPAT_URL,
-      {
-        key: "handphone",
-        type: "-",
-        awb_number: String(awbNumber),
-        user_id: String(userId || ""),
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${bearerToken}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Origin: "https://pod.sicepat.com",
-          Referer: "https://pod.sicepat.com/",
-          "x-permission-token": permissionToken,
-        },
-        timeout: 20000,
-      }
-    );
+  const result = await lookupAwb({ awb: awbNumber, ...creds });
+  if (result.ok) return res.json({ ok: true, status: result.status, value: result.value });
 
-    const data = response.data || {};
-    const value = data.value === undefined || data.value === null ? "" : String(data.value);
-    return res.json({ ok: true, status: response.status, value });
-  } catch (err) {
-    const status = err.response ? err.response.status : 0;
-    const upstreamData = err.response ? err.response.data : null;
-
-    console.error("[recheck] Upstream status:", status);
-    console.error("[recheck] Upstream response:", JSON.stringify(upstreamData, null, 2));
-
-    if (status === 401 || status === 403) auditCredentialRejection(req, status);
-
-    let message;
-    if (status === 401) message = "Authorization failed — token is invalid or expired.";
-    else if (status === 403) message = "Forbidden — insufficient permission.";
-    else if (status === 429) message = "Rate limited by SiCepat.";
-    else if (status === 400) message = "SiCepat rejected the request (bad request).";
-    else if (status === 404) message = "AWB not found.";
-    else if (status >= 500) message = `SiCepat server error (HTTP ${status}).`;
-    else if (status === 0) message = "Network error — could not reach SiCepat.";
-    else message = `Request failed (HTTP ${status}).`;
-
-    return res.status(status || 502).json({ ok: false, status: status || 502, message });
-  }
+  console.error("[recheck] Upstream status:", result.status);
+  console.error("[recheck] Upstream response:", JSON.stringify(result.upstream, null, 2));
+  if (isAuthStatus(result.status)) auditCredentialRejection(req, result.status);
+  return res.status(result.status || 502).json({ ok: false, status: result.status || 502, message: result.message });
 });
 
 module.exports = router;
