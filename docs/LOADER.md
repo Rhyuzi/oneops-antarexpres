@@ -116,7 +116,7 @@ Warrior sheets.
 | **RESI JNE** | **header kept, always empty**; the operator fills it after the JNE upload |
 | NAMA / ALAMAT / KECAMATAN / KODE POS / NO HANDPHONE PENERIMA | Penerima, Alamat (on one line), Kecamatan Tujuan, KODEPOS, normalized phone |
 | **KOTA PENERIMA** | the hub's label, see below (fallback: Kota_Tujuan, reported) |
-| JUMLAH PACKING | Koli (≥ 1, default 1) |
+| JUMLAH PACKING | always 1 (template Koli is ignored) |
 | BERAT/KG | Berat per the weight switch (Berat Asli is used for the conversion, not exported) |
 | DESKRIPSI BARANG, HARGA BARANG | Nama Barang, Nilai Barang (Rules 9/12/14) |
 | HARGA COD | Nilai COD on COD rows, `0` on Non-COD rows |

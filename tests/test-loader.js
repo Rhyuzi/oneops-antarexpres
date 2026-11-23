@@ -806,7 +806,8 @@ test("JNE values: COD Y/N + CATEGORY, HARGA COD 0 for Non-COD, CUSTOMER ID numer
   assert.strictEqual(r1["ORDER ID / REFERENCE NUMBER"], 1);
   assert.strictEqual(r1.__row.getCell(JNE_HEADERS.indexOf("NO RESI SICEPAT") + 1).numFmt, "000000000000");
   assert.strictEqual(r1.SERVICE, "REG");
-  assert.strictEqual(r1["JUMLAH PACKING"], 2); // Koli
+  // JUMLAH PACKING is always 1, even when the template Koli is 2 (resi 1).
+  assert.ok(rows.every((r) => r["JUMLAH PACKING"] === 1), "JUMLAH PACKING always 1");
   assert.strictEqual(r1["KODE POS PENERIMA"], 41281);
   // Unknown COD value (REG) is never turned into Y/N — reported instead.
   const r4 = byResiJne(rows, "4");

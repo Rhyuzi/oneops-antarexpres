@@ -21,6 +21,9 @@
 
 const { CUST_ID_HEADER } = require("./transform");
 
+/** JUMLAH PACKING is always 1 per resi, whatever "Koli" the template has. */
+const JUMLAH_PACKING = 1;
+
 const JNE_HEADERS = [
   "TGL DROP", "STATUS", "CATEGORY", "NO RESI SICEPAT", "RESI JNE", "SS",
   "NAMA PENERIMA", "ALAMAT PENERIMA", "KOTA PENERIMA", "KODE POS PENERIMA",
@@ -49,7 +52,7 @@ function excelToday(now = new Date()) {
 }
 
 /**
- * @param {{headers: string[], rows: unknown[][], meta: Array<{rowNumber:number, geraiCode:string, geraiName:string, koli:number}>}} result
+ * @param {{headers: string[], rows: unknown[][], meta: Array<{rowNumber:number, geraiCode:string, geraiName:string}>}} result
  *        output of transformTemplate
  * @param {object} opts
  * @param {(meta: object, kotaTujuan: string) => {label: string, namaPengirim: string, source: string, reason: string|null, hub: string|null}} opts.lookupKotaPenerima
@@ -71,7 +74,7 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
   const groups = new Map();
 
   const rows = result.rows.map((row, i) => {
-    const meta = (result.meta && result.meta[i]) || { rowNumber: i + 2, geraiCode: "", geraiName: "", koli: 1 };
+    const meta = (result.meta && result.meta[i]) || { rowNumber: i + 2, geraiCode: "", geraiName: "" };
     const cod = String(v(row, col.cod)).trim();
     const kotaTujuan = String(v(row, col.kota));
     const kp = lookupKotaPenerima(meta, kotaTujuan);
@@ -96,7 +99,7 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
       "KODE POS PENERIMA": v(row, col.kodepos),
       "KECAMATAN PENERIMA": v(row, col.kec),
       "NO HANDPHONE PENERIMA": v(row, col.hp),
-      "JUMLAH PACKING": meta.koli || 1,
+      "JUMLAH PACKING": JUMLAH_PACKING, // always 1 (template Koli is ignored)
       "BERAT/KG": v(row, col.berat),
       "DESKRIPSI BARANG": v(row, col.barang),
       "HARGA BARANG": v(row, col.nilai),

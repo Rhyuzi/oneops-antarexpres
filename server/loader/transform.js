@@ -271,20 +271,17 @@ function transformTemplate(template, opts) {
   const lastDataRow = kept.length ? kept[kept.length - 1].n : 0;
   const sheet = makeSheet(template.headers, kept.map((x) => x.r));
   // Per-row facts that outlive Rule 1 / Rule 15 (row arrays keep identity
-  // through splice/sort): Excel row, gerai (→ KOTA PENERIMA), Koli.
+  // through splice/sort): Excel row, gerai (→ KOTA PENERIMA).
   const rowMeta = new WeakMap();
   {
     const gi = colIndex(sheet, "Kode Gerai Terakhir");
     const gn = colIndex(sheet, "Nama Gerai Terakhir");
-    const ko = colIndex(sheet, "Koli");
     const text = (row, i) => (i < 0 || isEmptyCell(row[i]) ? "" : String(row[i]).trim());
     sheet.rows.forEach((row, i) => {
-      const koli = ko < 0 ? NaN : toNumber(row[ko]);
       rowMeta.set(row, {
         rowNumber: kept[i].n,
         geraiCode: text(row, gi),
         geraiName: text(row, gn),
-        koli: Number.isFinite(koli) && koli >= 1 ? Math.round(koli) : 1,
       });
     });
   }
