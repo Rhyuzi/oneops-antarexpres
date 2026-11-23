@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -54,6 +54,25 @@ const mode = ref<Mode>('file')
 const templateFile = ref<File | null>(null)
 const recheckedFile = ref<File | null>(null)
 const wilayah = ref('')
+
+// Rule 4 switch: convert Berat from Berat Asli (default ON). Remembered per
+// browser only as a convenience — the server default is ON as well.
+const WEIGHT_PREF_KEY = 'oneops.loader.convertWeight'
+function readWeightPref(): boolean {
+  try {
+    return localStorage.getItem(WEIGHT_PREF_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+const convertWeight = ref(readWeightPref())
+watch(convertWeight, (on) => {
+  try {
+    localStorage.setItem(WEIGHT_PREF_KEY, on ? 'on' : 'off')
+  } catch {
+    /* storage unavailable: keep the in-memory value */
+  }
+})
 const custIdNonCod = ref('')
 const custIdCod = ref('')
 const formError = ref<MessageKey | ''>('')
@@ -128,6 +147,7 @@ const processAction = useAsyncAction(async (): Promise<void> => {
       custIdCod: custIdCod.value.trim(),
       custIdNonCod: custIdNonCod.value.trim(),
       wilayah: wilayah.value || undefined,
+      convertWeightFromActual: convertWeight.value,
     })
     report.value = resp.data.report
     download.value = resp.data.download
@@ -206,6 +226,7 @@ const startAction = useAsyncAction(async (acknowledge: boolean): Promise<void> =
       custIdCod: custIdCod.value.trim(),
       custIdNonCod: custIdNonCod.value.trim(),
       wilayah: wilayah.value || undefined,
+      convertWeightFromActual: convertWeight.value,
       acknowledgeWarnings: acknowledge,
     })
     precheckResult.value = null
@@ -457,6 +478,26 @@ onUnmounted(() => {
         </div>
         <p class="-mt-2 text-xs text-slate-400">{{ t('loader.custIdHint') }} {{ t('loader.wilayahHint') }}</p>
 
+        <!-- Rule 4 switch: Berat from Berat Asli -->
+        <div class="flex items-start gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
+          <button
+            id="convert-weight"
+            type="button"
+            role="switch"
+            class="relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50"
+            :class="convertWeight ? 'bg-indigo-600' : 'bg-slate-300'"
+            :aria-checked="convertWeight"
+            :disabled="busy"
+            @click="convertWeight = !convertWeight"
+          >
+            <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition" :class="convertWeight ? 'translate-x-4' : 'translate-x-0.5'"></span>
+          </button>
+          <label for="convert-weight" class="cursor-pointer text-sm">
+            <span class="font-medium text-slate-700">{{ t('loader.convertWeight') }}</span>
+            <span class="block text-xs text-slate-400">{{ convertWeight ? t('loader.convertWeightOnHint') : t('loader.convertWeightOffHint') }}</span>
+          </label>
+        </div>
+
         <p v-if="formError || serverError" class="flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
           <AlertTriangle :size="16" class="mt-0.5 shrink-0" /> {{ formError ? t(formError) : serverError }}
         </p>
@@ -621,7 +662,7 @@ onUnmounted(() => {
           { label: t('loader.statRows'), value: report.rows },
           { label: t('loader.statCod'), value: report.cod },
           { label: t('loader.statNonCod'), value: report.nonCod },
-          { label: t('loader.statWeight'), value: report.weight.normalized },
+          { label: t('loader.statWeight'), value: report.weight.conversion === false ? t('loader.convertWeightOff') : report.weight.normalized },
           { label: t('loader.statKodepos'), value: `${formatNumber(report.kodepos.filled)} / ${formatNumber(report.rows)}` },
           { label: report.recheck ? t('loader.statPhonesApi') : t('loader.statPhones'), value: `${formatNumber(report.phone.fromRechecked)} / ${formatNumber(report.rows)}` },
         ]" :key="stat.label" class="rounded-xl border border-slate-200 p-3">
@@ -631,6 +672,7 @@ onUnmounted(() => {
       </div>
 
       <div class="space-y-1 text-xs text-slate-500">
+        <p v-if="report.weight.conversion === false" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.convertWeightOffNote') }}</p>
         <p v-if="report.weight.guardSkipped" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.guardNote', { count: formatNumber(report.weight.guardSkipped) }) }}</p>
         <p v-if="report.nilaiBarangDefaulted" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.defaultedNote', { count: formatNumber(report.nilaiBarangDefaulted) }) }}</p>
         <p class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.columnsNote', { columns: report.columns.join(' · ') }) }}</p>

@@ -184,6 +184,35 @@ async function main() {
     assert.strictEqual(c.getCell(14).numFmt, "0");
   });
 
+  await test("weight switch: convertWeightFromActual=false keeps template Berat (Berat Asli kept); default ON converts", async () => {
+    const tplRows = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { defval: "" });
+    const beratOf = new Map(tplRows.map((r) => [String(Number(r.Resi)), Number(r.Berat)]));
+    const read = async (body) => {
+      const r = await request("POST", "/api/loader/process", { cookie: S, body });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+      const dl = await request("GET", `/api/loader/download/${r.json.download.id}`, { cookie: S });
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(dl.buf);
+      const rows = [];
+      wb.worksheets[0].eachRow((row, n) => { if (n > 1) rows.push({ resi: String(row.getCell(1).value), berat: row.getCell(2).value, asli: row.getCell(3).value }); });
+      return { report: r.json.report, rows, header: wb.worksheets[0].getRow(1).values.slice(1, 4) };
+    };
+    const off = await read({ ...goodBody, convertWeightFromActual: false });
+    assert.deepStrictEqual(off.header, ["Resi", "Berat", "Berat Asli"]);
+    assert.strictEqual(off.report.weight.conversion, false);
+    assert.strictEqual(off.report.weight.normalized, 0);
+    assert.ok(off.rows.every((r) => r.berat === beratOf.get(r.resi)), "Berat changed although the switch is off");
+    assert.ok(off.rows.every((r, i) => i === 0 || off.rows[i - 1].berat <= r.berat), "sorted by template Berat");
+    const on = await read(goodBody); // no flag → ON (previous behaviour)
+    assert.strictEqual(on.report.weight.conversion, true);
+    assert.ok(on.report.weight.normalized > 0);
+    assert.ok(on.rows.some((r) => r.berat !== beratOf.get(r.resi)), "nothing converted with the switch on");
+    assert.ok(on.rows.every((r, i) => i === 0 || on.rows[i - 1].berat <= r.berat), "sorted by converted Berat");
+    const audits = await query("SELECT metadata FROM storage_audit_logs WHERE action = 'loader.processed' ORDER BY id DESC LIMIT 2");
+    const text = audits.map((a) => (typeof a.metadata === "string" ? a.metadata : JSON.stringify(a.metadata)));
+    assert.ok(/"convert_weight":true/.test(text[0]) && /"convert_weight":false/.test(text[1]), "switch state recorded in the audit");
+  });
+
   await test("download is owner-only and unknown/expired ids give 404", async () => {
     assert.strictEqual((await request("GET", "/api/loader/download/doesnotexist", { cookie: S })).status, 404);
     // Another super admin session (same user) can re-download; a different user cannot:

@@ -145,6 +145,7 @@ function summarize(report, recheck) {
     rows: report.rows,
     cod: report.cod,
     nonCod: report.nonCod,
+    weightConversion: report.weight.conversion !== false,
     weightNormalized: report.weight.normalized,
     weightGuarded: report.weight.guardSkipped,
     kodeposFilled: report.kodepos.filled,
@@ -202,7 +203,7 @@ function audit(job, action, extra = {}, result = "success") {
  * Starts an API-mode job (returns immediately; work continues in background).
  * Caller has validated input, run the pre-check and checked permissions.
  */
-async function startApiJob({ userId, table, templateName, ids, wilayah, reference, kotaMap, awbs, credentials, precheck, client = lookupAwb, queueOptions }) {
+async function startApiJob({ userId, table, templateName, ids, wilayah, reference, kotaMap, awbs, credentials, precheck, convertWeight = true, client = lookupAwb, queueOptions }) {
   if (hasActiveJob(userId)) {
     const e = new Error("You already have a loader recheck job running. Wait for it to finish or cancel it.");
     e.status = 409;
@@ -221,6 +222,7 @@ async function startApiJob({ userId, table, templateName, ids, wilayah, referenc
     wilayah,
     reference,
     kotaMap,
+    convertWeight: convertWeight !== false,
     awbs,
     awbByKey: new Map(awbs.map((a) => [a.key, a.awb])),
     results: new Map(),
@@ -243,7 +245,7 @@ async function startApiJob({ userId, table, templateName, ids, wilayah, referenc
   };
   jobs.set(job.publicId, job);
   await insertJobRow(job);
-  audit(job, "loader.job_started", { awb_total: awbs.length });
+  audit(job, "loader.job_started", { awb_total: awbs.length, convert_weight: job.convertWeight });
   job.done = runJob(job);
   return job;
 }
@@ -305,6 +307,7 @@ async function runJob(job) {
       wilayah: job.wilayah,
       reference: job.reference,
       kotaMap: job.kotaMap,
+      convertWeight: job.convertWeight,
     });
     job.download = storeResult(job.userId, out.buffer, out.filename);
     job.report = { ...out.report, recheck };

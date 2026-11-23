@@ -6,10 +6,12 @@
  *
  * Phone source — two modes:
  *   FILE  POST /api/loader/process            loader.run
- *         body { template, rechecked, custIdCod, custIdNonCod, wilayah? }
+ *         body { template, rechecked, custIdCod, custIdNonCod, wilayah?,
+ *                convertWeightFromActual? (default true — Rule 4 switch) }
  *         → { report, download, jobId }   (synchronous)
  *   API   POST /api/loader/jobs               loader.run + loader.recheck
  *         body { template, custIdCod, custIdNonCod, wilayah?, acknowledgeWarnings?,
+ *                convertWeightFromActual?,
  *                sicepatUserId }
  *         headers: Authorization: Bearer <SiCepat token>, x-permission-token
  *         (the SAME token the user manages in the rechecker settings — never
@@ -97,6 +99,7 @@ function auditSummary(report) {
     rows: report.rows,
     cod: report.cod,
     non_cod: report.nonCod,
+    convert_weight: report.weight.conversion !== false,
     weight_normalized: report.weight.normalized,
     kodepos_filled: report.kodepos.filled,
     kodepos_missing: report.kodepos.missing.length,
@@ -124,6 +127,7 @@ router.post("/process", requirePermission("loader.run"), async (req, res) => {
       custIdCod: body.custIdCod,
       custIdNonCod: body.custIdNonCod,
       wilayah,
+      convertWeight: service.convertWeightOf(body),
     });
 
     const download = jobs.storeResult(req.user.id, out.buffer, out.filename);
@@ -230,6 +234,7 @@ router.post("/jobs", requirePermission("loader.run"), requirePermission("loader.
       awbs,
       credentials,
       precheck,
+      convertWeight: service.convertWeightOf(body),
     });
     return res.status(202).json({ ok: true, job: await jobs.getJobView(job.publicId, { userId: req.user.id }) });
   } catch (err) {

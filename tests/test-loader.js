@@ -200,8 +200,10 @@ test("output = TAMPILAN FINAL layout + Berat Asli right of Berat, Status Terakhi
   assert.strictEqual(out.report.beratAsliPlacement, "after_berat");
   assert.strictEqual(out.report.removedAsalKecamatan, true);
 });
-test("Rule 3: rows sorted by original Berat ascending (stable)", () => {
-  assert.deepStrictEqual(out.rows.map((r) => get(r, "Resi")), ["000000000004", "000000000001", "000000000002", "000000000003"]);
+test("Rule 3: rows sorted by the FINAL Berat ascending (stable; switch on → converted Berat)", () => {
+  // resi 1: Berat 2 → 1 (from Berat Asli 0.75) ties with resi 4 (Berat 1) and keeps its earlier place.
+  assert.deepStrictEqual(out.rows.map((r) => get(r, "Resi")), ["000000000001", "000000000004", "000000000002", "000000000003"]);
+  assert.strictEqual(out.report.weight.conversion, true);
 });
 test("Rule 4 in the pipeline: 2/0.75→1, 13/9.1→9, guard 2/4.45 stays 2, 1/0.6 stays 1", () => {
   assert.strictEqual(get(byResi("000000000001"), "Berat"), 1);
@@ -269,6 +271,59 @@ async function readBack(buffer) {
   await wb.xlsx.load(buffer);
   return wb.worksheets[0];
 }
+// --- Weight conversion switch (Rule 4 on/off) ------------------------------------
+const outOff = T.transformTemplate(SYNTH, {
+  rechecked: RECHECKED,
+  lookupKodepos: buildKodeposLookup(REF),
+  custIdCod: "82220300",
+  custIdNonCod: "82220303",
+  convertWeight: false,
+});
+const getOff = (r, h) => r[outOff.headers.indexOf(h)];
+const byResiOff = (resi) => outOff.rows.find((r) => getOff(r, "Resi") === resi);
+
+test("switch default (option omitted) = conversion ON", () => {
+  const explicit = T.transformTemplate(SYNTH, {
+    rechecked: RECHECKED, lookupKodepos: buildKodeposLookup(REF), custIdCod: "82220300", custIdNonCod: "82220303", convertWeight: true,
+  });
+  assert.deepStrictEqual(explicit.rows, out.rows);
+  assert.deepStrictEqual(explicit.report.weight, out.report.weight);
+});
+test("switch OFF: Berat kept exactly as in the template (numbers), Berat Asli still right of Berat", () => {
+  assert.deepStrictEqual(outOff.headers, FINAL);
+  assert.strictEqual(getOff(byResiOff("000000000001"), "Berat"), 2);
+  assert.strictEqual(getOff(byResiOff("000000000003"), "Berat"), 13);
+  assert.strictEqual(getOff(byResiOff("000000000002"), "Berat"), 2);
+  assert.strictEqual(getOff(byResiOff("000000000004"), "Berat"), 1);
+  assert.strictEqual(getOff(byResiOff("000000000001"), "Berat Asli"), 0.75);
+  assert.strictEqual(getOff(byResiOff("000000000003"), "Berat Asli"), 9.1);
+  assert.deepStrictEqual(outOff.report.weight, { conversion: false, normalized: 0, unchanged: 4, belowThreshold: 0, guardSkipped: 0, invalid: [] });
+});
+test("switch OFF: sort uses the template Berat", () => {
+  assert.deepStrictEqual(outOff.rows.map((r) => getOff(r, "Resi")), ["000000000004", "000000000001", "000000000002", "000000000003"]);
+});
+test("switch ON vs OFF: Rules 12/14 use the Berat that is written", () => {
+  // Non-COD resi 3: Biaya 10000 × Berat + 500000 (Nilai Barang 0 → default)
+  assert.strictEqual(get(byResi("000000000003"), "Nilai Barang"), 10000 * 9 + 500000);
+  assert.strictEqual(getOff(byResiOff("000000000003"), "Nilai Barang"), 10000 * 13 + 500000);
+  // COD resi 1: Nilai COD 134442 − Berat × 2800
+  assert.strictEqual(get(byResi("000000000001"), "Nilai Barang"), 134442 - 1 * 2800);
+  assert.strictEqual(getOff(byResiOff("000000000001"), "Nilai Barang"), 134442 - 2 * 2800);
+});
+test("switch OFF: every other rule unchanged (kodepos, phones, CUST ID, COD)", () => {
+  const strip = (o) => o.rows.map((r) => FINAL.filter((h) => h !== "Berat" && h !== "Nilai Barang").map((h) => r[o.headers.indexOf(h)]))
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  assert.deepStrictEqual(strip(outOff), strip(out));
+  assert.deepStrictEqual(outOff.report.phone, out.report.phone);
+  assert.deepStrictEqual(outOff.report.kodepos, out.report.kodepos);
+});
+test("switch OFF: non-numeric Berat is reported, not guessed", () => {
+  const bad = { headers: HEADERS, rows: [row({ Resi: "9", Berat: "abc", "Berat Asli": 1.2, COD: "COD", Biaya: 1, "Nilai Barang": 1, "Nilai COD": 1, "Kecamatan Tujuan": "Cibogo", "Status Terakhir": "x" })] };
+  const o = T.transformTemplate(bad, { rechecked: new Map(), lookupKodepos: buildKodeposLookup(REF), custIdCod: "1", custIdNonCod: "2", convertWeight: false });
+  assert.strictEqual(o.report.weight.invalid.length, 1);
+  assert.strictEqual(o.rows[0][o.headers.indexOf("Berat")], "abc");
+});
+
 test("styled output: Titillium Web 9, bold header, thin borders everywhere, numbers not formulas", async () => {
   const res = await processLoader({
     templateBuffer: toXlsx(SYNTH.headers, SYNTH.rows),
@@ -288,7 +343,7 @@ test("styled output: Titillium Web 9, bold header, thin borders everywhere, numb
     for (const side of ["top", "left", "bottom", "right"]) assert.strictEqual(cell.border[side].style, "thin");
     assert.ok(!(cell.value && typeof cell.value === "object" && "formula" in cell.value), "formula found");
   }));
-  const r = ws.getRow(3); // resi 1 after sort
+  const r = ws.getRow(2); // resi 1 after sort (first data row)
   const col = (h) => FINAL.indexOf(h) + 1;
   assert.strictEqual(r.getCell(col("Resi")).value, 1);
   assert.strictEqual(r.getCell(col("Resi")).numFmt, "000000000000"); // shows 000000000001

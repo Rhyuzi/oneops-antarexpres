@@ -15,7 +15,7 @@ export interface LoaderReport {
   cod: number
   nonCod: number
   columns: string[]
-  weight: { normalized: number; unchanged: number; belowThreshold: number; guardSkipped: number; invalid: ResiValue[] }
+  weight: { conversion?: boolean; normalized: number; unchanged: number; belowThreshold: number; guardSkipped: number; invalid: ResiValue[] }
   kodepos: { filled: number; missing: Array<{ kecamatan: string; count: number }>; ambiguous: Array<{ kecamatan: string; options: string[] }> }
   phone: { fromRechecked: number; notInRechecked: string[]; normalized: number; invalid: ResiValue[] }
   nilaiBarangDefaulted: number
@@ -81,6 +81,7 @@ export async function startApiJob(body: {
   custIdNonCod: string
   wilayah?: string
   acknowledgeWarnings?: boolean
+  convertWeightFromActual?: boolean
 }): Promise<LoaderJob> {
   const tok = tokenRequest()
   const resp = await axios.post('/api/loader/jobs', { ...body, sicepatUserId: tok.sicepatUserId }, { headers: tok.headers })

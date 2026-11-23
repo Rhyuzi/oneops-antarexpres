@@ -16,6 +16,11 @@
  *    after "Berat", with "Status Terakhir" renamed "CUST ID" (Rule 10).
  *  - Rule 4: decimal part ≥ 0.3 rounds UP, below 0.3 rounds DOWN, min 1
  *    (0.75→1, 9.1→9, 2.3→3). Only when Berat ≥ 2 and Berat Asli ≤ Berat.
+ *    Switchable: opts.convertWeight === false keeps Berat exactly as in the
+ *    template (Berat Asli is still kept/shown). Default ON.
+ *  - Rule 3 sorts by the FINAL Berat (after Rule 4 when the switch is on,
+ *    the template value when off), so order and Rules 12/14 always use the
+ *    same Berat that is written to the file.
  *  - Rule 6: KODEPOS is inserted directly LEFT of "Kecamatan Tujuan"
  *    (as in TAMPILAN FINAL).
  *  - Rules 12/14 write the computed value into "Nilai Barang"; the Berat
@@ -172,9 +177,11 @@ function pushCapped(list, item) {
  * @param {(kecamatan: string, kotaTujuan: string) => {kodepos: string|null, status: string, options?: string[]}} opts.lookupKodepos
  * @param {string} opts.custIdCod
  * @param {string} opts.custIdNonCod
+ * @param {boolean} [opts.convertWeight=true]  Rule 4 on/off (Berat from Berat Asli)
  */
 function transformTemplate(template, opts) {
   const { rechecked, lookupKodepos, custIdCod, custIdNonCod } = opts;
+  const convertWeight = opts.convertWeight !== false;
   const sheet = makeSheet(template.headers, template.rows.filter((r) => r.some((c) => c !== "" && c !== null && c !== undefined)));
 
   const missing = REQUIRED_COLUMNS.filter((c) => colIndex(sheet, c) < 0);
@@ -187,7 +194,7 @@ function transformTemplate(template, opts) {
     rows: sheet.rows.length,
     removedColumns: [],
     beratAsliPlacement: null,
-    weight: { normalized: 0, unchanged: 0, belowThreshold: 0, guardSkipped: 0, invalid: [] },
+    weight: { conversion: convertWeight, normalized: 0, unchanged: 0, belowThreshold: 0, guardSkipped: 0, invalid: [] },
     kodepos: { filled: 0, missing: [], ambiguous: [] },
     phone: { fromRechecked: 0, notInRechecked: [], normalized: 0, invalid: [] },
     nilaiBarangDefaulted: 0,
@@ -228,7 +235,32 @@ function transformTemplate(template, opts) {
   const c = (name) => colIndex(sheet, name);
   const resiOf = (row) => String(row[c("Resi")] === undefined ? "" : row[c("Resi")]);
 
-  // Rule 3 — sort by Berat, small → large (stable; non-numeric last).
+  // Rule 4 — normalize Berat from Berat Asli (Berat ≥ 2, guard Asli > Berat).
+  // Switch off → Berat stays as in the template (only invalid values reported).
+  {
+    const bi = c("Berat");
+    const ai = c("Berat Asli");
+    for (const row of sheet.rows) {
+      if (!convertWeight) {
+        const b = toNumber(row[bi]);
+        if (!Number.isFinite(b)) pushCapped(report.weight.invalid, { resi: resiOf(row), berat: row[bi], beratAsli: row[ai] });
+        else {
+          row[bi] = b; // same value, stored as a number (not derived from Berat Asli)
+          report.weight.unchanged++;
+        }
+        continue;
+      }
+      const r = applyWeightRule(row[bi], row[ai]);
+      if (r.reason === "invalid") pushCapped(report.weight.invalid, { resi: resiOf(row), berat: row[bi], beratAsli: row[ai] });
+      else row[bi] = r.berat;
+      if (r.reason === "normalized") report.weight.normalized++;
+      else if (r.reason === "unchanged") report.weight.unchanged++;
+      else if (r.reason === "below_threshold") report.weight.belowThreshold++;
+      else if (r.reason === "guard_asli_greater") report.weight.guardSkipped++;
+    }
+  }
+
+  // Rule 3 — sort by the final Berat, small → large (stable; non-numeric last).
   {
     const bi = c("Berat");
     const keyed = sheet.rows.map((row, i) => ({ row, i, b: toNumber(row[bi]) }));
@@ -240,21 +272,6 @@ function transformTemplate(template, opts) {
       return x.i - y.i;
     });
     sheet.rows = keyed.map((k) => k.row);
-  }
-
-  // Rule 4 — normalize Berat from Berat Asli (Berat ≥ 2, guard Asli > Berat).
-  {
-    const bi = c("Berat");
-    const ai = c("Berat Asli");
-    for (const row of sheet.rows) {
-      const r = applyWeightRule(row[bi], row[ai]);
-      if (r.reason === "invalid") pushCapped(report.weight.invalid, { resi: resiOf(row), berat: row[bi], beratAsli: row[ai] });
-      else row[bi] = r.berat;
-      if (r.reason === "normalized") report.weight.normalized++;
-      else if (r.reason === "unchanged") report.weight.unchanged++;
-      else if (r.reason === "below_threshold") report.weight.belowThreshold++;
-      else if (r.reason === "guard_asli_greater") report.weight.guardSkipped++;
-    }
   }
 
   // Rule 5 — Berat Asli is KEPT (right of Berat) for manual checking.

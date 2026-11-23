@@ -60,9 +60,10 @@ function makeLookup({ reference, kotaMap, wilayah }) {
  * Rules 1–16 for an already-read template, with the phone source given as a
  * Map (normalized resi → phone) — from a rechecked file OR from the API queue.
  */
-async function buildLoaderFile({ table, templateName, rechecked, recheckedMeta, ids, wilayah, reference, kotaMap }) {
+async function buildLoaderFile({ table, templateName, rechecked, recheckedMeta, ids, wilayah, reference, kotaMap, convertWeight = true }) {
   const result = transformTemplate(table, {
     rechecked,
+    convertWeight: convertWeight !== false,
     lookupKodepos: makeLookup({ reference, kotaMap, wilayah }),
     custIdCod: ids.cod,
     custIdNonCod: ids.nonCod,
@@ -102,6 +103,7 @@ async function processLoader({
   wilayah = null,
   referenceRows = null, // injected in tests; DB otherwise
   kotaMap = null,
+  convertWeight = true, // Rule 4 switch: Berat from Berat Asli
 }) {
   const ids = validateCustIds(custIdCod, custIdNonCod);
   const table = readTemplate(templateBuffer, templateName);
@@ -116,11 +118,19 @@ async function processLoader({
     wilayah,
     reference,
     kotaMap: mapping,
+    convertWeight,
   });
+}
+
+/** Request body → Rule 4 switch. Missing = ON (previous behaviour); only an explicit false/"false"/0 turns it off. */
+function convertWeightOf(body) {
+  const v = body ? body.convertWeightFromActual : undefined;
+  return !(v === false || v === "false" || v === 0 || v === "0");
 }
 
 module.exports = {
   processLoader,
+  convertWeightOf,
   buildLoaderFile,
   readTemplate,
   loadLookupData,

@@ -127,10 +127,17 @@ have `Status Terakhir`.)
 
 1. Remove the 25 unused columns (case-insensitive, trimmed).
 2. **Berat Asli moves directly right of Berat**; Asal_kecamatan is dropped.
-3. Sort rows by Berat ascending (stable).
-4. If Berat ≥ 2 and Berat Asli ≤ Berat: Berat = Berat Asli rounded to kilos —
-   decimal ≥ 0.3 up, < 0.3 down, minimum 1 (0.75→1, 9.1→9, 2.3→3).
-   **Never changed when Berat Asli > Berat.**
+3. Sort rows by the **final** Berat ascending (stable) — the converted value
+   when the switch is on, the template value when it is off. (Runs after
+   Rule 4, so the order matches the Berat written to the file.)
+4. **Switchable** — *Convert Berat from Berat Asli* (body
+   `convertWeightFromActual`, default **on**; the page remembers the choice
+   per browser). On: if Berat ≥ 2 and Berat Asli ≤ Berat, Berat = Berat Asli
+   rounded to kilos — decimal ≥ 0.3 up, < 0.3 down, minimum 1
+   (0.75→1, 9.1→9, 2.3→3); **never changed when Berat Asli > Berat**.
+   Off: Berat stays exactly as in the template (a non-numeric Berat is
+   reported). The report has `weight.conversion`; the audit and the job
+   history record `convert_weight` / `weightConversion`.
 5. Berat Asli is **kept** (right of Berat, original value) for manual checking.
 6. Insert **KODEPOS left of Kecamatan Tujuan**, from `kebutuhan_loader`
    (name match ignores case/spaces/punctuation/"Kec."). Same name with several
@@ -149,7 +156,8 @@ have `Status Terakhir`.)
     Rows with an unknown COD value keep their original text there (and are reported).
 11. Non-COD → `N`. 12. Non-COD Nilai Barang = Biaya × Berat + Nilai Barang.
 13. COD → `Y`. 14. COD Nilai Barang = Nilai COD − Berat × 2800.
-    (Berat = the normalized value from Rule 4.)
+    (Berat = the value written to the file: converted when the switch is on,
+    the template value when off.)
 15. Remove Koli and Biaya.
 16. Output via ExcelJS: Titillium Web 9 (header bold, centered), thin borders
     on every cell, numbers stored as numbers (no formulas); Resi as number
@@ -167,10 +175,10 @@ All paths are under `/api/loader`. `{name, data}` = file with base64 data
 
 | Method | Path | Permission / notes |
 |---|---|---|
-| POST | `/process` | `loader.run` — `{ template, rechecked, custIdCod, custIdNonCod, wilayah? }` → `{ report, download, jobId }` |
+| POST | `/process` | `loader.run` — `{ template, rechecked, custIdCod, custIdNonCod, wilayah?, convertWeightFromActual? }` → `{ report, download, jobId }` |
 | GET | `/download/:id` | `loader.run` — `.xlsx` attachment; owner only, 15 min |
 | POST | `/precheck` | `loader.view` — `{ template, wilayah? }` → `{ precheck }` (no API call) |
-| POST | `/jobs` | `loader.run` + `loader.recheck`; token headers required. Body: `{ template, custIdCod, custIdNonCod, wilayah?, sicepatUserId?, acknowledgeWarnings? }`. Responses: `202 { job }`; `400 PRECHECK_FAILED`; `409 PRECHECK_WARNINGS` (resend with `acknowledgeWarnings: true`); `409 JOB_ALREADY_RUNNING`; `400 SICEPAT_CREDENTIALS_MISSING` |
+| POST | `/jobs` | `loader.run` + `loader.recheck`; token headers required. Body: `{ template, custIdCod, custIdNonCod, wilayah?, convertWeightFromActual?, sicepatUserId?, acknowledgeWarnings? }`. Responses: `202 { job }`; `400 PRECHECK_FAILED`; `409 PRECHECK_WARNINGS` (resend with `acknowledgeWarnings: true`); `409 JOB_ALREADY_RUNNING`; `400 SICEPAT_CREDENTIALS_MISSING` |
 | GET | `/jobs` | `loader.view` — own jobs; `?scope=all` with `loader.manage_settings` |
 | GET | `/jobs/:id` | `loader.view` — progress, report and download when done (owner, or `manage_settings`) |
 | POST | `/jobs/:id/resume` | `loader.recheck` — paused jobs only; uses the token headers of this request |

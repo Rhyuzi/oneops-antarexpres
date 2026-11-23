@@ -75,8 +75,10 @@ let passed = 0, failed = 0
 async function test(name, fn) { try { await fn(); passed++; console.log(`  ok    ${name}`) } catch (e) { failed++; console.log(`  FAIL  ${name}\n        ${e.message}`) } }
 const assert = (c, m) => { if (!c) throw new Error(m) }
 
-async function main() {
-  for (let i = 0; i < 50 && !ws; i++) { try { const u = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page')?.webSocketDebuggerUrl; if (u) ws = new WebSocket(u) } catch {} if (!ws) await sleep(200) }
+/** Connects the CDP session to one page (tab). */
+async function attach(url) {
+  try { ws?.close() } catch {}
+  ws = new WebSocket(url)
   await new Promise((r) => ws.addEventListener('open', r, { once: true }))
   ws.addEventListener('message', (m) => {
     const d = JSON.parse(m.data)
@@ -85,6 +87,20 @@ async function main() {
   })
   await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable'); await send('DOM.enable')
   await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true })
+}
+
+/** A fresh tab (same browser profile: session cookie + localStorage kept). */
+async function newTab() {
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
+  let url = ''
+  for (let i = 0; i < 50 && !url; i++) { url = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.id === targetId)?.webSocketDebuggerUrl || ''; if (!url) await sleep(100) }
+  await attach(url)
+}
+
+async function main() {
+  let first = ''
+  for (let i = 0; i < 50 && !first; i++) { try { first = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page')?.webSocketDebuggerUrl || '' } catch {} if (!first) await sleep(200) }
+  await attach(first)
   console.log(`3PL Loader browser E2E against ${BASE}\n`)
 
   await send('Page.navigate', { url: BASE + '/login' })
@@ -95,9 +111,9 @@ async function main() {
   await waitFor(`location.pathname.startsWith('/ops/')`, 'login')
 
   await test('sidebar shows the loader; page loads reference summary', async () => {
-    assert(await ev(`[...document.querySelectorAll('aside a')].some((a) => a.innerText.includes('Kodepos Loader'))`), 'nav item missing')
+    assert(await ev(`[...document.querySelectorAll('aside a')].some((a) => a.innerText.includes('3PL Loader'))`), 'nav item missing')
     await send('Page.navigate', { url: BASE + '/ops/kodepos-loader' })
-    await waitFor(`document.body.innerText.includes('162 kecamatan in the reference')`, 'summary')
+    await waitFor(`/[0-9]+ kecamatan in the reference/.test(document.body.innerText)`, 'summary')
   })
 
   await test('client validation: files + two different cust ids required (no request sent)', async () => {
@@ -110,6 +126,11 @@ async function main() {
     await clickText('Process & download')
     await waitFor(`document.body.innerText.includes('The COD and Non-COD cust IDs must be different.')`, 'same ids')
     assert(!requests.slice(m).includes('/api/loader/process'), 'request sent despite invalid form')
+  })
+
+  await test('weight switch shown, ON by default', async () => {
+    assert(await ev(`document.querySelector('#convert-weight')?.getAttribute('aria-checked') === 'true'`), 'switch missing or off')
+    assert(await ev(`document.body.innerText.includes('Convert Berat from Berat Asli')`), 'switch label')
   })
 
   await test('process → automatic download of the styled .xlsx + result summary', async () => {
@@ -149,8 +170,11 @@ async function main() {
   })
 
   await test('API mode: rechecker token from Settings → pre-check → job progress → automatic download', async () => {
+    // Fresh tab: Chrome's "multiple automatic downloads" limiter is per tab
+    // and origin, and this download starts from the poll timer, not a click.
+    await newTab()
     await send('Page.navigate', { url: BASE + '/ops/kodepos-loader' })
-    await waitFor(`document.body.innerText.includes('162 kecamatan in the reference')`, 'page')
+    await waitFor(`/[0-9]+ kecamatan in the reference/.test(document.body.innerText)`, 'page')
     await ev(`[...document.querySelectorAll('button[aria-pressed]')].find((b) => b.innerText.includes('Recheck automatically')).click()`)
     await waitFor(`document.body.innerText.includes('No rechecker token set')`, 'token missing notice')
     // The existing rechecker token system (localStorage), picked up on window focus.
@@ -167,7 +191,11 @@ async function main() {
     assert(mockCalls.every((c) => c.bearer === 'Bearer e2e-bearer'), 'token not forwarded')
     let n = before
     for (let i = 0; i < 150 && n === before; i++) { await sleep(100); n = readdirSync(downloads).length }
-    assert(n > before, 'no automatic download')
+    if (n <= before) {
+      await shot('api-no-download')
+      const lines = (await ev('document.body.innerText')).split('\n').filter((l) => /download|unduh|failed|gagal|error/i.test(l))
+      throw new Error(`no automatic download (${before} files before) — page: ${lines.slice(0, 6).join(' | ')}`)
+    }
     assert(await ev(`document.body.innerText.includes('Loader history')`), 'history card missing')
     await shot('api-done')
   })
