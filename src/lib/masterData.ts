@@ -53,7 +53,7 @@ export const ENTITIES: Record<EntityKey, EntityDef> = {
       { key: 'hub', label: 'masterData.hubs.hub' },
       { key: 'analytic_code', label: 'masterData.hubs.analyticCode', mono: true },
       { key: 'city', label: 'masterData.hubs.city' },
-      { key: 'kota_penerima', label: 'masterData.hubs.kotaPenerima', empty: 'masterData.hubs.fallback' },
+      { key: 'hub_type', label: 'masterData.hubs.hubType' },
       { key: 'nama_pengirim', label: 'masterData.hubs.namaPengirim' },
     ],
     fields: [
