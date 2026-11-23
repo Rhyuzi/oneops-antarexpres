@@ -82,6 +82,31 @@ test("guard: Berat is never changed when Berat Asli > Berat", () => {
   assert.deepStrictEqual(T.applyWeightRule(2, 2.05), { berat: 2, reason: "guard_asli_greater" });
   assert.deepStrictEqual(T.applyWeightRule(3, 3.1), { berat: 3, reason: "guard_asli_greater" });
 });
+test("hard rule: Berat 5 + Berat Asli 6.3 stays 5 (never increased)", () => {
+  assert.deepStrictEqual(T.applyWeightRule(5, 6.3), { berat: 5, reason: "guard_asli_greater" });
+  assert.deepStrictEqual(T.applyWeightRule("5", "6,3"), { berat: 5, reason: "guard_asli_greater" });
+});
+test("Berat < 2 is kept as is, whatever Berat Asli is", () => {
+  assert.deepStrictEqual(T.applyWeightRule(1.5, 0.4), { berat: 1.5, reason: "below_threshold" });
+  assert.deepStrictEqual(T.applyWeightRule(1, 6.3), { berat: 1, reason: "below_threshold" });
+  assert.deepStrictEqual(T.applyWeightRule(1.99, 1.2), { berat: 1.99, reason: "below_threshold" });
+});
+test("Berat ≥ 2 and Berat Asli ≤ Berat: rounded from Berat Asli, never above Berat", () => {
+  assert.deepStrictEqual(T.applyWeightRule(5, 3.4), { berat: 4, reason: "normalized" });
+  assert.deepStrictEqual(T.applyWeightRule(5, 4.2), { berat: 4, reason: "normalized" });
+  assert.deepStrictEqual(T.applyWeightRule(5, 4.6), { berat: 5, reason: "unchanged" });
+  // rounding up would exceed a fractional Berat → capped at the original Berat
+  assert.deepStrictEqual(T.applyWeightRule(2.5, 2.4), { berat: 2.5, reason: "unchanged" });
+  assert.deepStrictEqual(T.applyWeightRule(4.5, 4.5), { berat: 4.5, reason: "unchanged" });
+});
+test("invariant: result Berat ≤ original Berat for every combination", () => {
+  for (let b = 0; b <= 20; b += 0.25) {
+    for (let a = 0; a <= 25; a += 0.05) {
+      const r = T.applyWeightRule(b, a);
+      assert.ok(r.berat <= b, `Berat ${b} / Asli ${a} → ${r.berat}`);
+    }
+  }
+});
 test("equal / already-normalized weights are reported unchanged; bad numbers invalid", () => {
   assert.deepStrictEqual(T.applyWeightRule(2, 2), { berat: 2, reason: "unchanged" });
   assert.deepStrictEqual(T.applyWeightRule(14, 14), { berat: 14, reason: "unchanged" });
@@ -233,6 +258,13 @@ test("Rule 4 in the pipeline: 2/0.75→1, 13/9.1→9, guard 2/4.45 stays 2, 1/0.
     { n: out.report.weight.normalized, g: out.report.weight.guardSkipped, b: out.report.weight.belowThreshold },
     { n: 2, g: 1, b: 1 }
   );
+});
+test("transform: row with Berat 5 / Berat Asli 6.3 keeps Berat 5 in the output", () => {
+  const data = { headers: HEADERS, rows: [row({ Resi: "77", Berat: 5, "Berat Asli": 6.3, COD: "COD", Biaya: 1, "Nilai Barang": 1, "Nilai COD": 1, "Kecamatan Tujuan": "Cibogo", "Status Terakhir": "x" })] };
+  const o = T.transformTemplate(data, { rechecked: new Map(), lookupKodepos: buildKodeposLookup(REF), custIdCod: "1", custIdNonCod: "2" });
+  assert.strictEqual(o.rows[0][o.headers.indexOf("Berat")], 5);
+  assert.strictEqual(o.report.weight.guardSkipped, 1);
+  assert.strictEqual(o.report.weight.normalized, 0);
 });
 test("Rule 6: KODEPOS filled from the reference; unknown kecamatan reported", () => {
   assert.strictEqual(get(byResi("000000000001"), "KODEPOS"), "41281");

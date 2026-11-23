@@ -254,7 +254,9 @@ have `Status Terakhir`.)
    `convertWeightFromActual`, default **on**; the page remembers the choice
    per browser). On: if Berat ≥ 2 and Berat Asli ≤ Berat, Berat = Berat Asli
    rounded to kilos — decimal ≥ 0.3 up, < 0.3 down, minimum 1
-   (0.75→1, 9.1→9, 2.3→3); **never changed when Berat Asli > Berat**.
+   (0.75→1, 9.1→9, 2.3→3); **never changed when Berat Asli > Berat** (e.g. Berat 5 / Berat Asli 6.3
+   stays 5). Berat only ever goes down: the result is capped at the original
+   Berat, so rounding up never adds weight.
    Off: Berat stays exactly as in the template (a non-numeric Berat is
    reported). The report has `weight.conversion`; the audit and the job
    history record `convert_weight` / `weightConversion`.

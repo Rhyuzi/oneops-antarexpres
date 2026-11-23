@@ -19,7 +19,8 @@
  *    reads it. "Status Terakhir" becomes the cust id ("CUST ID", Rule 10) —
  *    exported as CUSTOMER ID.
  *  - Rule 4: decimal part ≥ 0.3 rounds UP, below 0.3 rounds DOWN, min 1
- *    (0.75→1, 9.1→9, 2.3→3). Only when Berat ≥ 2 and Berat Asli ≤ Berat.
+ *    (0.75→1, 9.1→9, 2.3→3). Only when Berat ≥ 2 and Berat Asli ≤ Berat;
+ *    the result never exceeds the original Berat (Berat only goes down).
  *    Switchable: opts.convertWeight === false keeps Berat exactly as in the
  *    template. Default ON. The result is exported as BERAT/KG.
  *  - Rule 3 sorts by the FINAL Berat (after Rule 4 when the switch is on,
@@ -121,9 +122,12 @@ function applyWeightRule(berat, beratAsli) {
   if (!Number.isFinite(b)) return { berat, reason: "invalid" };
   if (b < WEIGHT_RULE_MIN_BERAT) return { berat: b, reason: "below_threshold" };
   if (!Number.isFinite(a)) return { berat: b, reason: "invalid" };
-  // Guard: never change Berat when Berat Asli is heavier than Berat.
+  // Hard rule: Berat may only go DOWN, never up.
+  // 1) Berat Asli heavier than Berat → keep Berat as is (e.g. 5 / 6.3 → 5).
   if (clean(a) > clean(b)) return { berat: b, reason: "guard_asli_greater" };
-  const next = roundWeight(a);
+  // 2) Rounding up must not exceed the original Berat either (e.g. a
+  //    fractional Berat 2.5 with Berat Asli 2.4 would round to 3) → cap at b.
+  const next = Math.min(roundWeight(a), b);
   return next === b ? { berat: b, reason: "unchanged" } : { berat: next, reason: "normalized" };
 }
 
