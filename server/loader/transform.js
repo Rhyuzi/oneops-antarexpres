@@ -8,21 +8,25 @@
  * applied strictly in the documented order; each one mutates a working copy
  * and records what it did in `report`.
  *
+ * OUTPUT: these rows are INTERMEDIATE only. The exported .xlsx is built from
+ * them by server/loader/jne.js — exactly the 34 Data Warrior "Loader JNE"
+ * columns (TANGGAL … CUSTOMER ID). The intermediate header names below
+ * ("Berat Asli", "KODEPOS", "CUST ID" …) never reach the file.
+ *
  * Interpretations confirmed against the sample files (see docs):
  *  - Rule 2: "Berat Asli" takes the place of "Asal_kecamatan" (which is
- *    dropped) and sits directly RIGHT of "Berat". It is KEPT in the output
- *    for manual checking (Rule 5 no longer deletes it), so the output is the
- *    "TAMPILAN FINAL" layout of KEBUTUHAN LOADER.xlsx plus "Berat Asli"
- *    after "Berat", with "Status Terakhir" renamed "CUST ID" (Rule 10).
+ *    dropped) and sits right of "Berat" in the intermediate rows, where Rule 4
+ *    reads it. "Status Terakhir" becomes the cust id ("CUST ID", Rule 10) —
+ *    exported as CUSTOMER ID.
  *  - Rule 4: decimal part ≥ 0.3 rounds UP, below 0.3 rounds DOWN, min 1
  *    (0.75→1, 9.1→9, 2.3→3). Only when Berat ≥ 2 and Berat Asli ≤ Berat.
  *    Switchable: opts.convertWeight === false keeps Berat exactly as in the
- *    template (Berat Asli is still kept/shown). Default ON.
+ *    template. Default ON. The result is exported as BERAT/KG.
  *  - Rule 3 sorts by the FINAL Berat (after Rule 4 when the switch is on,
  *    the template value when off), so order and Rules 12/14 always use the
  *    same Berat that is written to the file.
  *  - Rule 6: KODEPOS is inserted directly LEFT of "Kecamatan Tujuan"
- *    (as in TAMPILAN FINAL).
+ *    (intermediate; exported as KODE POS PENERIMA).
  *  - Rules 12/14 write the computed value into "Nilai Barang"; the Berat
  *    used is the normalized one (Rule 4 ran before).
  */
@@ -54,6 +58,16 @@ const COD_FEE_PER_KG = 2800; // Rule 14
 const WEIGHT_RULE_MIN_BERAT = 2; // Rule 4 applies only when Berat ≥ 2
 const ROUND_UP_FRACTION = 0.3; // Rule 4 threshold
 const LIST_CAP = 500; // max items per report list
+
+/**
+ * Columns checked for empty cells (warning, never blocking). "Nilai COD" is
+ * only checked on COD rows; "No HP Penerima" / "Nilai Barang" are not — they
+ * are replaced (rechecked/API) or defaulted (Rule 9) and reported there.
+ */
+const EMPTY_CHECK_COLUMNS = [
+  "Resi", "Berat", "Berat Asli", "Penerima", "Kota_Tujuan", "Kecamatan Tujuan",
+  "Alamat Penerima", "Nama Barang", "COD", "Biaya", "Nilai COD",
+];
 
 function normHeader(h) {
   return String(h === undefined || h === null ? "" : h).trim().replace(/\s+/g, " ").toLowerCase();
@@ -125,12 +139,32 @@ function normalizeResi(value) {
 
 // --- Rules 10–14 ------------------------------------------------------------------
 
-/** COD column → "cod" | "noncod" | null (unknown). */
+/**
+ * COD column → "cod" | "noncod" | null (unknown — never guessed, reported).
+ * Accepted: COD / Y / YA / YES / TRUE / 1  and  NON-COD / NON COD / NONCOD /
+ * N / NO / TIDAK / FALSE / 0 (case, spaces, "-" and "_" ignored). The output
+ * COD column is always "Y" / "N" for known values (Rules 11/13).
+ */
+const COD_VALUES = new Set(["COD", "Y", "YA", "YES", "TRUE", "1"]);
+const NON_COD_VALUES = new Set(["NONCOD", "N", "NO", "TIDAK", "FALSE", "0"]);
 function codCategory(value) {
+  if (value === true) return "cod";
+  if (value === false) return "noncod";
   const v = String(value === null || value === undefined ? "" : value).toUpperCase().replace(/[\s_-]/g, "");
-  if (v === "COD" || v === "Y" || v === "YA" || v === "YES") return "cod";
-  if (v === "NONCOD" || v === "N" || v === "NO" || v === "TIDAK") return "noncod";
+  if (COD_VALUES.has(v)) return "cod";
+  if (NON_COD_VALUES.has(v)) return "noncod";
   return null;
+}
+
+/** Address on one line: CR/LF → one space, runs of whitespace collapsed, trimmed. */
+function cleanAddress(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\r\n|\r|\n/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Empty = null, undefined, or a string that is blank after trimming. */
+function isEmptyCell(value) {
+  return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
 }
 
 /** Rule 12: (Biaya × Berat) + Nilai Barang. */
@@ -168,10 +202,54 @@ function pushCapped(list, item) {
 }
 
 /**
+ * Empty-data warnings for the template's data rows (never blocking):
+ *  - rows:        [{ row (Excel row), resi, columns: [...] }]  (EMPTY_CHECK_COLUMNS)
+ *  - byColumn:    [{ column, count }]
+ *  - emptyColumns: output columns empty on EVERY row
+ *  - blankRows:   fully blank Excel rows between data rows (skipped)
+ * Shared by the pre-check and the transform so both report the same thing.
+ */
+function detectEmpty({ headers, rows, rowNumbers, blankRows = [] }) {
+  const idx = (name) => headers.findIndex((h) => normHeader(h) === normHeader(name));
+  const codIdx = idx("COD");
+  const resiIdx = idx("Resi");
+  const checked = EMPTY_CHECK_COLUMNS.map((name) => ({ name, i: idx(name) })).filter((x) => x.i >= 0);
+  const out = { cells: 0, rowsWithEmpty: 0, byColumn: [], rows: [], emptyColumns: [], blankRows: blankRows.slice(0, LIST_CAP) };
+  const byColumn = new Map();
+  rows.forEach((row, n) => {
+    const isCod = codIdx >= 0 && codCategory(row[codIdx]) === "cod";
+    const cols = [];
+    for (const { name, i } of checked) {
+      if (name === "Nilai COD" && !isCod) continue;
+      if (isEmptyCell(row[i])) {
+        cols.push(headers[i]);
+        byColumn.set(headers[i], (byColumn.get(headers[i]) || 0) + 1);
+      }
+    }
+    if (!cols.length) return;
+    out.cells += cols.length;
+    out.rowsWithEmpty++;
+    pushCapped(out.rows, {
+      row: rowNumbers ? rowNumbers[n] : n + 2,
+      resi: resiIdx < 0 || isEmptyCell(row[resiIdx]) ? "" : String(row[resiIdx]).trim(),
+      columns: cols,
+    });
+  });
+  out.byColumn = [...byColumn].map(([column, count]) => ({ column, count })).sort((a, b) => b.count - a.count);
+  // Columns empty on EVERY row — only those that reach the output (Rule 1 drops the rest).
+  const removed = new Set(REMOVED_COLUMNS);
+  out.emptyColumns = rows.length
+    ? headers.filter((h, i) => h && !removed.has(normHeader(h)) && rows.every((r) => isEmptyCell(r[i])))
+    : [];
+  return out;
+}
+
+/**
  * Runs Rules 1–15 (Rule 16 = Excel formatting, Rule 17 = two cust ids are
  * inputs here). Throws LoaderInputError for unusable input.
  *
- * @param {{headers: string[], rows: unknown[][]}} template  3PL template sheet
+ * @param {{headers: string[], rows: unknown[][], rowNumbers?: number[]}} template
+ *   3PL template sheet; rowNumbers = Excel row of each data row (warnings)
  * @param {object} opts
  * @param {Map<string,string>} opts.rechecked   normalizeResi(resi) → phone
  * @param {(kecamatan: string, kotaTujuan: string) => {kodepos: string|null, status: string, options?: string[]}} opts.lookupKodepos
@@ -182,7 +260,30 @@ function pushCapped(list, item) {
 function transformTemplate(template, opts) {
   const { rechecked, lookupKodepos, custIdCod, custIdNonCod } = opts;
   const convertWeight = opts.convertWeight !== false;
-  const sheet = makeSheet(template.headers, template.rows.filter((r) => r.some((c) => c !== "" && c !== null && c !== undefined)));
+  // Blank rows are skipped (and reported with their Excel row number).
+  const numbered = template.rows.map((r, i) => ({ r, n: template.rowNumbers ? template.rowNumbers[i] : i + 2 }));
+  const blank = numbered.filter((x) => x.r.every(isEmptyCell));
+  const kept = numbered.filter((x) => !x.r.every(isEmptyCell));
+  const lastDataRow = kept.length ? kept[kept.length - 1].n : 0;
+  const sheet = makeSheet(template.headers, kept.map((x) => x.r));
+  // Per-row facts that outlive Rule 1 / Rule 15 (row arrays keep identity
+  // through splice/sort): Excel row, gerai (→ KOTA PENERIMA), Koli.
+  const rowMeta = new WeakMap();
+  {
+    const gi = colIndex(sheet, "Kode Gerai Terakhir");
+    const gn = colIndex(sheet, "Nama Gerai Terakhir");
+    const ko = colIndex(sheet, "Koli");
+    const text = (row, i) => (i < 0 || isEmptyCell(row[i]) ? "" : String(row[i]).trim());
+    sheet.rows.forEach((row, i) => {
+      const koli = ko < 0 ? NaN : toNumber(row[ko]);
+      rowMeta.set(row, {
+        rowNumber: kept[i].n,
+        geraiCode: text(row, gi),
+        geraiName: text(row, gn),
+        koli: Number.isFinite(koli) && koli >= 1 ? Math.round(koli) : 1,
+      });
+    });
+  }
 
   const missing = REQUIRED_COLUMNS.filter((c) => colIndex(sheet, c) < 0);
   if (missing.length) {
@@ -203,7 +304,17 @@ function transformTemplate(template, opts) {
     unknownCod: [],
     negativeNilaiBarang: [],
     invalidNumbers: [],
+    addressCleaned: 0,
+    empty: null,
   };
+
+  // Empty rows / columns / cells (warnings with Excel row + column name).
+  report.empty = detectEmpty({
+    headers: sheet.headers,
+    rows: sheet.rows,
+    rowNumbers: kept.map((x) => x.n),
+    blankRows: blank.filter((x) => x.n < lastDataRow).map((x) => x.n),
+  });
 
   // Rule 1 — drop unused columns.
   const removeSet = new Set(REMOVED_COLUMNS);
@@ -233,6 +344,20 @@ function transformTemplate(template, opts) {
   }
 
   const c = (name) => colIndex(sheet, name);
+
+  // Alamat Penerima on one line (CR/LF → space, extra spaces removed).
+  {
+    const ai = c("Alamat Penerima");
+    if (ai >= 0) {
+      for (const row of sheet.rows) {
+        const before = row[ai];
+        const after = cleanAddress(before);
+        if (typeof before === "string" && after !== before) report.addressCleaned++;
+        row[ai] = after;
+      }
+    }
+  }
+
   const resiOf = (row) => String(row[c("Resi")] === undefined ? "" : row[c("Resi")]);
 
   // Rule 4 — normalize Berat from Berat Asli (Berat ≥ 2, guard Asli > Berat).
@@ -274,7 +399,8 @@ function transformTemplate(template, opts) {
     sheet.rows = keyed.map((k) => k.row);
   }
 
-  // Rule 5 — Berat Asli is KEPT (right of Berat) for manual checking.
+  // Rule 5 — Berat Asli stays in the intermediate rows (not exported: the
+  // Loader JNE layout has BERAT/KG only).
 
   // Rule 6 — KODEPOS next to (left of) Kecamatan Tujuan, from kebutuhan_loader.
   {
@@ -389,7 +515,7 @@ function transformTemplate(template, opts) {
     if (i >= 0) removeColumn(sheet, i);
   }
 
-  return { headers: sheet.headers, rows: sheet.rows, report };
+  return { headers: sheet.headers, rows: sheet.rows, meta: sheet.rows.map((r) => rowMeta.get(r)), report };
 }
 
 module.exports = {
@@ -405,6 +531,10 @@ module.exports = {
   normalizePhone,
   normalizeResi,
   codCategory,
+  cleanAddress,
+  isEmptyCell,
+  detectEmpty,
+  EMPTY_CHECK_COLUMNS,
   nonCodNilaiBarang,
   codNilaiBarang,
   transformTemplate,

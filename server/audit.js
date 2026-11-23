@@ -64,6 +64,7 @@ const MODULE_LABELS = {
   data_warrior: "Data Warrior",
   number_rechecking: "Number Rechecking",
   loader: "3PL Loader",
+  master_data: "Master Data",
   system: "System",
   other: "Other",
 };
@@ -84,6 +85,7 @@ const MODULE_RULES = [
   ["permission.*", "data_warrior"],
   ["recheck.*", "number_rechecking"],
   ["loader.*", "loader"],
+  ["master_data.*", "master_data"],
   ["smtp.*", "system"],
 ].map(([pattern, module]) => ({
   prefix: pattern.endsWith("*"),
@@ -274,6 +276,12 @@ function describe(action, d, entityId) {
     case "loader.kota_mapping_created": return `Mapped Kota_Tujuan "${x.kota || "?"}" to a wilayah`;
     case "loader.kota_mapping_updated": return `Changed the wilayah of Kota_Tujuan "${x.kota || "?"}"`;
     case "loader.kota_mapping_deleted": return `Removed the wilayah mapping of Kota_Tujuan "${x.kota || "?"}"`;
+    case "loader.hub_mapping_updated": return `Changed KOTA PENERIMA / NAMA PENGIRIM of hub "${x.hub || "?"}"`;
+    case "loader.hubs_imported": return `Imported gerai/HUB master${x.file ? ` "${x.file}"` : ""}`;
+    case "master_data.create": return `Master Data: created ${x.entity_label || x.entity || "record"} "${x.record_key || entityId || "?"}"`;
+    case "master_data.update": return `Master Data: updated ${x.entity_label || x.entity || "record"} "${x.record_key || entityId || "?"}"`;
+    case "master_data.delete": return `Master Data: deleted ${x.entity_label || x.entity || "record"} "${x.record_key || entityId || "?"}"`;
+    case "master_data.import": return `Master Data: imported ${x.entity_label || x.entity || "records"}${x.file ? ` from "${x.file}"` : ""}`;
     case "smtp.verify": return `Verified SMTP connection (${x.ok ? "ok" : "failed"})`;
     case "smtp.test_email": return `Sent SMTP test email${x.recipient ? ` to ${x.recipient}` : ""} (${x.result || "?"})`;
     default: return String(action || "").replace(/[._]/g, " ");

@@ -2,7 +2,11 @@
 import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  Building2,
   Database,
+  History,
+  Mailbox,
+  MapPinned,
   ScanSearch,
   ScrollText,
   Wand2,
@@ -66,6 +70,18 @@ const navGroups = computed(() => {
       ],
     },
   ]
+
+  // MASTER DATA: loader reference data (CRUD needs master_data.manage; the
+  // 3PL Loader only reads it). Audit trail needs master_data.audit.
+  if (authStore.can('master_data.view')) {
+    const mdItems: NavItem[] = [
+      { name: 'master-data-hubs', label: 'nav.mdHubs', icon: Building2, permission: 'master_data.view' },
+      { name: 'master-data-kota-wilayah', label: 'nav.mdKotaWilayah', icon: MapPinned, permission: 'master_data.view' },
+      { name: 'master-data-kodepos', label: 'nav.mdKodepos', icon: Mailbox, permission: 'master_data.view' },
+      { name: 'master-data-audit', label: 'nav.mdAudit', icon: History, permission: 'master_data.audit' },
+    ]
+    groups.push({ label: 'nav.masterData', items: mdItems })
+  }
 
   // ACCESS MANAGEMENT: Roles & Permissions is super-admin only; Account
   // Management is visible to anyone with account_management.view.

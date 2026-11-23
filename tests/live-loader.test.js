@@ -163,28 +163,29 @@ async function main() {
     assert.ok(!JSON.stringify(meta).includes("62857"), "phone numbers leaked into audit");
   });
 
-  await test("download: xlsx attachment, TAMPILAN FINAL layout, styled numeric output", async () => {
+  await test("download: xlsx attachment, ONE sheet in the Loader JNE layout (34 columns), styled numeric output", async () => {
     const r = await request("GET", `/api/loader/download/${download.id}`, { cookie: S });
     assert.strictEqual(r.status, 200);
     assert.ok(/spreadsheetml/.test(r.headers["content-type"]));
     assert.ok(/attachment; filename="LOADER - TEMPLATE 3PL/.test(r.headers["content-disposition"]), r.headers["content-disposition"]);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(r.buf);
+    assert.strictEqual(wb.worksheets.length, 1, "exactly one sheet");
     const ws = wb.worksheets[0];
-    const finalHeaders = XLSX.utils.sheet_to_json(XLSX.readFile(MASTER).Sheets["TAMPILAN FINAL"], { header: 1 })[0]
-      .map((h) => (h === "Status Terakhir" ? "CUST ID" : h))
-      .flatMap((h) => (h === "Berat" ? ["Berat", "Berat Asli"] : [h])); // Berat Asli kept, right of Berat
-    assert.deepStrictEqual(ws.getRow(1).values.slice(1), finalHeaders);
+    const H = require("../server/loader/jne").JNE_HEADERS;
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), H);
+    assert.strictEqual(H.length, 34);
     assert.strictEqual(ws.rowCount, 120);
+    const col = (h) => H.indexOf(h) + 1;
     const c = ws.getRow(2);
     assert.strictEqual(c.getCell(1).font.name, "Titillium Web");
-    assert.strictEqual(c.getCell(1).numFmt, "000000000000");
-    assert.ok(/^628\d+$/.test(String(c.getCell(5).value)));
-    assert.ok([82220300, 82220303].includes(c.getCell(14).value), "CUST ID must be a number");
-    assert.strictEqual(c.getCell(14).numFmt, "0");
+    assert.strictEqual(c.getCell(col("NO RESI SICEPAT")).numFmt, "000000000000");
+    assert.ok(/^628\d+$/.test(String(c.getCell(col("NO HANDPHONE PENERIMA")).value)));
+    assert.ok([82220300, 82220303].includes(c.getCell(col("CUSTOMER ID")).value), "CUSTOMER ID must be a number");
+    assert.strictEqual(c.getCell(col("CUSTOMER ID")).numFmt, "0");
   });
 
-  await test("weight switch: convertWeightFromActual=false keeps template Berat (Berat Asli kept); default ON converts", async () => {
+  await test("weight switch: convertWeightFromActual=false keeps template Berat in BERAT/KG; default ON converts", async () => {
     const tplRows = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { defval: "" });
     const beratOf = new Map(tplRows.map((r) => [String(Number(r.Resi)), Number(r.Berat)]));
     const read = async (body) => {
@@ -193,12 +194,15 @@ async function main() {
       const dl = await request("GET", `/api/loader/download/${r.json.download.id}`, { cookie: S });
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(dl.buf);
+      const H = require("../server/loader/jne").JNE_HEADERS;
+      const ws = wb.worksheets[0];
       const rows = [];
-      wb.worksheets[0].eachRow((row, n) => { if (n > 1) rows.push({ resi: String(row.getCell(1).value), berat: row.getCell(2).value, asli: row.getCell(3).value }); });
-      return { report: r.json.report, rows, header: wb.worksheets[0].getRow(1).values.slice(1, 4) };
+      ws.eachRow((row, n) => {
+        if (n > 1) rows.push({ resi: String(row.getCell(H.indexOf("NO RESI SICEPAT") + 1).value), berat: row.getCell(H.indexOf("BERAT/KG") + 1).value });
+      });
+      return { report: r.json.report, rows };
     };
     const off = await read({ ...goodBody, convertWeightFromActual: false });
-    assert.deepStrictEqual(off.header, ["Resi", "Berat", "Berat Asli"]);
     assert.strictEqual(off.report.weight.conversion, false);
     assert.strictEqual(off.report.weight.normalized, 0);
     assert.ok(off.rows.every((r) => r.berat === beratOf.get(r.resi)), "Berat changed although the switch is off");
@@ -213,6 +217,62 @@ async function main() {
     assert.ok(/"convert_weight":true/.test(text[0]) && /"convert_weight":false/.test(text[1]), "switch state recorded in the audit");
   });
 
+  // --- Result 3PL (Data Warrior JNE layout) + gerai/HUB settings (migration 012) ---
+  const JNE = require("../server/loader/jne");
+  const readJne = async (downloadId) => {
+    const dl = await request("GET", `/api/loader/download/${downloadId}`, { cookie: S });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(dl.buf);
+    return wb;
+  };
+  const SUKAMELANG = "Subang Sukamelang LM"; // gerai of the sample template (A1218004)
+
+  await test("Loader JNE values: RESI JNE empty, COD Y/N, sender phone, CUSTOMER ID numeric, one-line alamat", async () => {
+    const r = await request("POST", "/api/loader/process", { cookie: S, body: goodBody });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+    const wb = await readJne(r.json.download.id);
+    assert.deepStrictEqual(wb.worksheets.map((w) => w.name), [JNE.JNE_SHEET]);
+    const ws = wb.worksheets[0];
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), JNE.JNE_HEADERS);
+    assert.strictEqual(ws.rowCount, 120);
+    const col = (h) => JNE.JNE_HEADERS.indexOf(h) + 1;
+    ws.eachRow((row, n) => {
+      if (n === 1) return;
+      assert.strictEqual(row.getCell(col("RESI JNE")).value, null);
+      assert.ok(["Y", "N"].includes(row.getCell(col("COD")).value));
+      assert.strictEqual(row.getCell(col("NO HANDPHONE PENGIRIM")).value, 6282121221355);
+      assert.ok([82220300, 82220303].includes(row.getCell(col("CUSTOMER ID")).value));
+      assert.ok(!/[\r\n]/.test(String(row.getCell(col("ALAMAT PENERIMA")).value || "")));
+      assert.strictEqual(row.getCell(1).font.name, "Titillium Web");
+    });
+    assert.strictEqual(r.json.report.senderPhone, "6282121221355");
+    assert.ok(r.json.report.empty && Array.isArray(r.json.report.empty.rows));
+  });
+
+  await test("hub settings: 53 seeded hubs; Sagaranten/Jampang Kulon labelled; Sukamelang falls back to Kota_Tujuan", async () => {
+    const g = await request("GET", "/api/loader/settings/hubs", { cookie: S });
+    assert.strictEqual(g.status, 200, JSON.stringify(g.json));
+    assert.ok(g.json.hubs.length >= 53);
+    const by = Object.fromEntries(g.json.hubs.map((h) => [h.hub, h]));
+    assert.strictEqual(by["Sukabumi Sagaranten LM"].kota_penerima, "Kab. Sukabumi Sgr");
+    assert.strictEqual(by["Sukabumi Jampang Kulon LM"].kota_penerima, "Kab. Sukabumi Jp");
+    assert.strictEqual(by[SUKAMELANG].analytic_code, "A1218004");
+    if (by[SUKAMELANG].kota_penerima) return; // labelled locally by the user — fallback case not testable
+    const r = await request("POST", "/api/loader/process", { cookie: S, body: goodBody });
+    const kp = r.json.report.kotaPenerima;
+    assert.deepStrictEqual([kp.mapped, kp.fallback], [0, 119]);
+    assert.deepStrictEqual(kp.fallbackGroups.map((x) => [x.reason, x.hub, x.kotaTujuan]), [["no_label", SUKAMELANG, "Kab. Subang"]]);
+    const ws = (await readJne(r.json.download.id)).worksheets[0];
+    assert.strictEqual(ws.getRow(2).getCell(JNE.JNE_HEADERS.indexOf("KOTA PENERIMA") + 1).value, "Kab. Subang");
+  });
+
+  await test("pre-check notices: empty data + KOTA PENERIMA preview (no API call, non-blocking)", async () => {
+    const r = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: goodBody.template } });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+    assert.ok(r.json.precheck.notices.empty);
+    assert.strictEqual(r.json.precheck.notices.kotaPenerima.mapped + r.json.precheck.notices.kotaPenerima.fallback, 119);
+  });
+
   await test("download is owner-only and unknown/expired ids give 404", async () => {
     assert.strictEqual((await request("GET", "/api/loader/download/doesnotexist", { cookie: S })).status, 404);
     // Another super admin session (same user) can re-download; a different user cannot:
@@ -225,15 +285,6 @@ async function main() {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.json.report.phone.fromRechecked, 0);
     assert.strictEqual(r.json.report.phone.invalid.length, 119);
-  });
-
-  await test("reference import (master) is idempotent and audited", async () => {
-    const before = await auditCount("loader.reference_imported");
-    const r = await request("POST", "/api/loader/reference/import", { cookie: S, body: { file: file(MASTER) } });
-    assert.strictEqual(r.status, 200, JSON.stringify(r.json));
-    assert.deepStrictEqual({ rows: r.json.rows, inserted: r.json.inserted, total: r.json.total }, { rows: 162, inserted: 0, total: 162 });
-    assert.deepStrictEqual(r.json.custIds.SUBANG, { N: "82220303", Y: "82220300" });
-    assert.strictEqual(await auditCount("loader.reference_imported"), before + 1);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

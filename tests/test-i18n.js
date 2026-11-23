@@ -114,6 +114,10 @@ test("untranslated (identical) values are only product names / technical terms",
     // Loader business terms used as-is in Indonesian operations
     "Cust ID Non-COD (N)", "Cust ID COD (Y)", "COD (Y)", "Non-COD (N)", "master",
     "Template", "Mode", "manual", "Kota_Tujuan", "Kota_Tujuan → wilayah",
+    // Result 3PL column names (Data Warrior JNE headers) are the same in both languages.
+    "Gerai / HUB → KOTA PENERIMA", "HUB", "KOTA PENERIMA", "NAMA PENGIRIM",
+    // Master Data: module name and reference column names, identical in both languages.
+    "MASTER DATA", "Master Data", "Kota_Tujuan → Wilayah", "Wilayah", "Kecamatan", "Kodepos", "Data",
   ]);
   const same = Object.keys(enLeaves).filter((k) => enLeaves[k] === idLeaves[k] && !ALLOWED.has(enLeaves[k]));
   assert.deepStrictEqual(same, [], `identical values need translation or an ALLOWED entry: ${same.join(", ")}`);

@@ -10,6 +10,22 @@ import { loadSettings } from './settings'
 
 export interface ResiValue { resi: string; value?: string | number; issue?: string | null; field?: string }
 export interface RecheckFailure { resi: string; code: string; httpStatus?: number; message?: string }
+/** Empty-data warnings (row = Excel row of the template). */
+export interface EmptyReport {
+  cells: number
+  rowsWithEmpty: number
+  byColumn: Array<{ column: string; count: number }>
+  rows: Array<{ row: number; resi: string; columns: string[] }>
+  emptyColumns: string[]
+  blankRows: number[]
+}
+export type KotaFallbackReason = 'no_gerai' | 'unknown_hub' | 'no_label'
+/** KOTA PENERIMA of the Result 3PL: hub mapping vs Kota_Tujuan fallback. */
+export interface KotaPenerimaReport {
+  mapped: number
+  fallback: number
+  fallbackGroups: Array<{ reason: KotaFallbackReason; hub: string | null; kotaTujuan: string; label: string; count: number; rows?: number[] }>
+}
 export interface LoaderReport {
   rows: number
   cod: number
@@ -22,6 +38,11 @@ export interface LoaderReport {
   unknownCod: ResiValue[]
   negativeNilaiBarang: ResiValue[]
   invalidNumbers: ResiValue[]
+  addressCleaned?: number
+  empty?: EmptyReport | null
+  kotaPenerima?: KotaPenerimaReport
+  sheets?: string[]
+  senderPhone?: string
   recheck?: { mode: 'api'; total: number; success: number; failed: number; byCode: Record<string, number>; failures: RecheckFailure[] }
 }
 export interface DownloadInfo { id: string; filename: string; expiresAt: string }
@@ -31,6 +52,20 @@ export interface Precheck {
   errors: Array<{ code: string; columns?: string[] }>
   warnings: PrecheckWarning[]
   counts: { rows: number; uniqueResi: number; cod: number; nonCod: number }
+  notices?: { empty: EmptyReport | null; kotaPenerima: KotaPenerimaReport | null }
+}
+/** Gerai / HUB master row (loader_hub_kota). */
+export interface HubMapping {
+  id: number
+  hub: string
+  dest_code: string | null
+  city: string | null
+  analytic_code: string | null
+  hub_type: string | null
+  kota_penerima: string | null
+  nama_pengirim: string | null
+  source: string
+  updated_by: string | null
 }
 export type JobStatus = 'running' | 'paused' | 'processing' | 'done' | 'failed' | 'cancelled' | 'interrupted'
 export interface LoaderJob {

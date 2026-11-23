@@ -12,13 +12,15 @@ import {
   PauseCircle,
   Play,
   Square,
-  Upload,
+  Lock,
+  Settings2,
   Wand2,
 } from 'lucide-vue-next'
 import axios from 'axios'
 import LoadingButton from '../components/LoadingButton.vue'
 import LoaderJobHistory from '../components/loader/LoaderJobHistory.vue'
 import KotaWilayahSettings from '../components/loader/KotaWilayahSettings.vue'
+import HubKotaSettings from '../components/loader/HubKotaSettings.vue'
 import { useAsyncAction } from '../composables/useAsyncAction'
 import { authStore } from '../stores/auth'
 import { formatBytes, formatDateTime, formatNumber, t, type MessageKey } from '../i18n'
@@ -32,6 +34,9 @@ import {
   resumeJob,
   startApiJob,
   type DownloadInfo,
+  type EmptyReport,
+  type KotaFallbackReason,
+  type KotaPenerimaReport,
   type LoaderJob,
   type LoaderReport,
   type Precheck,
@@ -45,7 +50,8 @@ const POLL_MS = 1500
 
 const canRun = computed(() => authStore.can('loader.run'))
 const canRecheck = computed(() => authStore.can('loader.recheck'))
-const canManage = computed(() => authStore.can('loader.manage_reference'))
+// Reference data is READ-ONLY here; it is edited in Master Data.
+const canManageMasterData = computed(() => authStore.can('master_data.manage'))
 const canEditRechecker = computed(() => authStore.can('number_rechecking.run'))
 
 // --- form ----------------------------------------------------------------------
@@ -81,7 +87,6 @@ const tokenReady = ref(hasRecheckerToken())
 
 const templateInput = ref<HTMLInputElement | null>(null)
 const recheckedInput = ref<HTMLInputElement | null>(null)
-const masterInput = ref<HTMLInputElement | null>(null)
 
 function setMode(next: Mode): void {
   if (busy.value) return
@@ -288,6 +293,47 @@ function precheckItem(item: Record<string, unknown>): string {
   return JSON.stringify(item)
 }
 
+const KOTA_REASONS: Record<KotaFallbackReason, MessageKey> = {
+  no_gerai: 'loader.kotaReasonNoGerai',
+  unknown_hub: 'loader.kotaReasonUnknownHub',
+  no_label: 'loader.kotaReasonNoLabel',
+}
+
+/** Shared by the result and the pre-check notices. */
+function noticeWarnings(empty: EmptyReport | null | undefined, kota: KotaPenerimaReport | null | undefined) {
+  const list: Array<{ key: MessageKey; count: number; items: string[] }> = []
+  if (kota && kota.fallback) {
+    list.push({
+      key: 'loader.warnKotaFallback',
+      count: kota.fallback,
+      items: kota.fallbackGroups.map((g) =>
+        `${g.hub || '—'} → ${g.label || '∅'} · ${t(KOTA_REASONS[g.reason])} — ${t('loader.rowsCount', { count: g.count })}`
+      ),
+    })
+  }
+  if (empty) {
+    if (empty.rowsWithEmpty) {
+      list.push({
+        key: 'loader.warnEmptyCells',
+        count: empty.rowsWithEmpty,
+        items: [
+          t('loader.emptyByColumn', { columns: empty.byColumn.map((c) => `${c.column} ${formatNumber(c.count)}`).join(' · ') }),
+          ...empty.rows.map((r) => `${t('loader.rowNumber', { row: r.row })}${r.resi ? ` · ${r.resi}` : ''}: ${r.columns.join(', ')}`),
+        ],
+      })
+    }
+    if (empty.emptyColumns.length) list.push({ key: 'loader.warnEmptyColumns', count: empty.emptyColumns.length, items: empty.emptyColumns })
+    if (empty.blankRows.length) {
+      list.push({ key: 'loader.warnBlankRows', count: empty.blankRows.length, items: empty.blankRows.map((n) => t('loader.rowNumber', { row: n })) })
+    }
+  }
+  return list
+}
+
+const precheckNotices = computed(() =>
+  precheckResult.value?.notices ? noticeWarnings(precheckResult.value.notices.empty, precheckResult.value.notices.kotaPenerima) : []
+)
+
 const RECHECK_CODES: Record<string, MessageKey> = {
   not_found: 'loader.rcNotFound',
   invalid_phone: 'loader.rcInvalidPhone',
@@ -308,6 +354,7 @@ const warnings = computed(() => {
   add('loader.warnNegative', r.negativeNilaiBarang.map((u) => `${u.resi} — ${formatNumber(Number(u.value))}`))
   add('loader.warnInvalidNumbers', r.invalidNumbers.map((u) => `${u.resi} — ${u.field}`))
   add('loader.warnWeightInvalid', r.weight.invalid.map((u) => `${u.resi}`))
+  list.push(...noticeWarnings(r.empty, r.kotaPenerima))
   return list
 })
 
@@ -324,9 +371,6 @@ const statusChip: Record<string, string> = {
 // --- reference -----------------------------------------------------------------------
 const summary = ref<{ total: number; wilayah: WilayahSummary[] } | null>(null)
 const summaryError = ref('')
-const importMessage = ref('')
-const importError = ref('')
-const foundCustIds = ref<Record<string, { N?: string; Y?: string }>>({})
 const historyKey = ref(0)
 
 async function loadSummary(): Promise<void> {
@@ -339,38 +383,28 @@ async function loadSummary(): Promise<void> {
   }
 }
 
-const importAction = useAsyncAction(async (file: File): Promise<void> => {
-  importMessage.value = ''
-  importError.value = ''
-  try {
-    const resp = await axios.post('/api/loader/reference/import', { file: await fileToPayload(file) })
-    importMessage.value = t('loader.importDone', {
-      rows: formatNumber(resp.data.rows),
-      inserted: formatNumber(resp.data.inserted),
-      total: formatNumber(resp.data.total),
-    })
-    foundCustIds.value = resp.data.custIds || {}
-    await loadSummary()
-  } catch (err) {
-    importError.value = apiErrorMessage(err, 'loader.importFailed')
+// Read-only kodepos lookup (GET /api/loader/reference) — no editing here.
+interface RefRow { id: number; wilayah: string | null; kecamatan: string; kodepos: string }
+const refSearch = ref('')
+const refRows = ref<RefRow[]>([])
+const refError = ref('')
+let refTimer = 0
+watch(refSearch, (v) => {
+  window.clearTimeout(refTimer)
+  const q = v.trim()
+  if (q.length < 2) {
+    refRows.value = []
+    return
   }
+  refTimer = window.setTimeout(async () => {
+    refError.value = ''
+    try {
+      refRows.value = (await axios.get('/api/loader/reference', { params: { search: q } })).data.rows.slice(0, 20)
+    } catch (err) {
+      refError.value = apiErrorMessage(err, 'loader.referenceLoadFailed')
+    }
+  }, 250)
 })
-
-function pickMaster(e: Event): void {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  if (!/\.(xlsx|xls)$/i.test(file.name)) return void (importError.value = t('loader.fileType'))
-  if (file.size > MAX_BYTES) return void (importError.value = t('loader.fileTooLarge'))
-  void importAction.run(file)
-}
-
-function useCustIds(w: string, ids: { N?: string; Y?: string }): void {
-  if (ids.N) custIdNonCod.value = ids.N
-  if (ids.Y) custIdCod.value = ids.Y
-  wilayah.value = w
-}
 
 function refreshTokenState(): void {
   tokenReady.value = hasRecheckerToken()
@@ -516,6 +550,12 @@ onUnmounted(() => {
               <li v-for="(item, i) in w.items" :key="i">{{ precheckItem(item) }}</li>
             </ul>
           </details>
+          <details v-for="w in precheckNotices" :key="w.key" class="rounded-lg bg-white/70 px-3 py-2">
+            <summary class="cursor-pointer text-sm font-medium text-slate-700">{{ t(w.key, { count: formatNumber(w.count) }) }}</summary>
+            <ul class="mt-2 max-h-40 space-y-0.5 overflow-auto font-mono text-xs text-slate-700">
+              <li v-for="(item, i) in w.items" :key="i">{{ item }}</li>
+            </ul>
+          </details>
           <p v-if="precheckResult.ok" class="text-xs text-slate-600">
             {{ t('loader.pcCounts', { rows: formatNumber(precheckResult.counts.rows), awb: formatNumber(precheckResult.counts.uniqueResi) }) }}
           </p>
@@ -627,30 +667,23 @@ onUnmounted(() => {
         </template>
         <div v-else class="flex justify-center py-4 text-slate-400"><Loader2 :size="20" class="animate-spin" /></div>
 
-        <template v-if="canManage">
-          <LoadingButton
-            class="btn btn-secondary w-full"
-            :loading-text="t('loader.importing')"
-            :loading="importAction.pending"
-            @click="masterInput?.click()"
-          >
-            <Upload :size="16" /> {{ t('loader.importMaster') }}
-          </LoadingButton>
-          <input ref="masterInput" type="file" accept=".xlsx,.xls" class="hidden" @change="pickMaster" />
-          <p class="text-xs text-slate-400">{{ t('loader.importHint') }}</p>
-          <p v-if="importMessage" class="flex items-start gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-            <CheckCircle2 :size="16" class="mt-0.5 shrink-0" /> {{ importMessage }}
-          </p>
-          <p v-if="importError" class="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{{ importError }}</p>
-          <div v-if="Object.keys(foundCustIds).length" class="rounded-xl border border-slate-200 p-3">
-            <p class="mb-2 text-xs font-semibold text-slate-500">{{ t('loader.custIdsFound') }}</p>
-            <div v-for="(ids, w) in foundCustIds" :key="w" class="flex items-center justify-between gap-2 py-1 text-xs">
-              <span class="font-medium text-slate-700">{{ w }}</span>
-              <span class="font-mono text-slate-500">{{ `N ${ids.N || '—'} · Y ${ids.Y || '—'}` }}</span>
-              <button type="button" class="btn btn-ghost px-2 py-1 text-xs" @click="useCustIds(String(w), ids)">{{ t('loader.useCustIds') }}</button>
-            </div>
-          </div>
-        </template>
+        <!-- Read-only lookup; changes happen in Master Data -->
+        <div class="space-y-2">
+          <input v-model="refSearch" type="text" class="input py-2" :placeholder="t('loader.refSearchPlaceholder')" :aria-label="t('loader.refSearchPlaceholder')" />
+          <p v-if="refError" class="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{{ refError }}</p>
+          <ul v-if="refRows.length" class="max-h-48 divide-y divide-slate-100 overflow-auto rounded-xl border border-slate-200 text-xs">
+            <li v-for="r in refRows" :key="r.id" class="flex items-center justify-between gap-2 px-3 py-1.5">
+              <span class="truncate text-slate-700">{{ r.kecamatan }}</span>
+              <span class="shrink-0 text-slate-400">{{ r.wilayah || t('common.dash') }}</span>
+              <span class="shrink-0 font-mono text-slate-600">{{ r.kodepos }}</span>
+            </li>
+          </ul>
+          <p v-else-if="refSearch.trim().length >= 2" class="text-xs text-slate-400">{{ t('loader.refNoMatch') }}</p>
+        </div>
+        <p class="flex items-start gap-1.5 text-xs text-slate-500"><Lock :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.referenceReadOnly') }}</p>
+        <router-link v-if="canManageMasterData" class="btn btn-secondary w-full" :to="{ name: 'master-data-kodepos' }">
+          <Settings2 :size="16" /> {{ t('loader.manageInMasterData') }}
+        </router-link>
       </section>
     </div>
 
@@ -675,6 +708,9 @@ onUnmounted(() => {
         <p v-if="report.weight.conversion === false" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.convertWeightOffNote') }}</p>
         <p v-if="report.weight.guardSkipped" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.guardNote', { count: formatNumber(report.weight.guardSkipped) }) }}</p>
         <p v-if="report.nilaiBarangDefaulted" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.defaultedNote', { count: formatNumber(report.nilaiBarangDefaulted) }) }}</p>
+        <p v-if="report.addressCleaned" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.addressCleanedNote', { count: formatNumber(report.addressCleaned) }) }}</p>
+        <p v-if="report.sheets" class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.sheetsNote', { main: report.sheets[0], phone: report.senderPhone || '' }) }}</p>
+        <p v-if="report.kotaPenerima" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.kotaPenerimaNote', { mapped: formatNumber(report.kotaPenerima.mapped), fallback: formatNumber(report.kotaPenerima.fallback) }) }}</p>
         <p class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.columnsNote', { columns: report.columns.join(' · ') }) }}</p>
       </div>
 
@@ -696,5 +732,6 @@ onUnmounted(() => {
       <LoaderJobHistory :key="historyKey" class="xl:col-span-2" @track="(j) => { setMode(j.mode); trackJob(j) }" @download="(d) => downloadAction.run(d)" />
       <KotaWilayahSettings />
     </div>
+    <HubKotaSettings />
   </div>
 </template>

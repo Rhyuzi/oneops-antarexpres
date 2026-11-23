@@ -213,13 +213,6 @@ const PERMISSIONS = [
     description: "Upload the 3PL template + rechecked Excel and download the loader file",
   },
   {
-    key: "loader.manage_reference",
-    module: "loader",
-    feature: "Manage kodepos reference",
-    action: "manage",
-    description: "Import / update the kebutuhan_loader kecamatan → kodepos reference",
-  },
-  {
     key: "loader.recheck",
     module: "loader",
     feature: "Recheck numbers via API",
@@ -229,9 +222,33 @@ const PERMISSIONS = [
   {
     key: "loader.manage_settings",
     module: "loader",
-    feature: "Manage loader settings",
+    feature: "View all loader jobs",
     action: "manage",
-    description: "Edit the Kota_Tujuan → wilayah mapping and view all loader jobs",
+    description: "See every user's loader jobs in the loader history (reference data is managed in Master Data)",
+  },
+
+  // --- Master Data: loader reference data (gerai/HUB, Kota_Tujuan → wilayah, kodepos)
+  // The 3PL Loader only READS these (loader.view); every change happens here.
+  {
+    key: "master_data.view",
+    module: "master_data",
+    feature: "Access module",
+    action: "view",
+    description: "Open Master Data and browse the reference tables (read-only)",
+  },
+  {
+    key: "master_data.manage",
+    module: "master_data",
+    feature: "Manage reference data",
+    action: "manage",
+    description: "Create, edit, delete and import gerai/HUB → KOTA PENERIMA, Kota_Tujuan → wilayah and the kodepos reference",
+  },
+  {
+    key: "master_data.audit",
+    module: "master_data",
+    feature: "View Master Data audit trail",
+    action: "view",
+    description: "See who changed which reference record, with before/after values",
   },
 
   // --- Audit Trail (read-only by design: no create/edit/delete keys) ----------
@@ -253,6 +270,7 @@ const MODULE_LABELS = {
   account_management: "Account Management",
   audit_trail: "Audit Trail",
   loader: "3PL Loader",
+  master_data: "Master Data",
 };
 
 function isValidKey(key) {

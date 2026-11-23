@@ -32,8 +32,11 @@ function select(folder: StorageFolder | null): void {
 
 <template>
   <div>
-    <!-- Virtual root -->
+    <!-- Virtual root — top level only: this component renders itself
+         recursively for every expanded folder, and nested copies must not
+         repeat "All folders" (or the loading row). -->
     <button
+      v-if="depth === 0"
       class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium transition"
       :class="
         store.state.currentFolderId === 'root'
@@ -46,7 +49,7 @@ function select(folder: StorageFolder | null): void {
       <span class="truncate">{{ t('storage.allFolders') }}</span>
     </button>
 
-    <template v-if="store.state.foldersLoading && !store.state.folders.length">
+    <template v-if="depth === 0 && store.state.foldersLoading && !store.state.folders.length">
       <div class="flex items-center gap-2 px-2 py-2 text-sm text-slate-400">
         <Loader2 :size="14" class="animate-spin" /> {{ t('common.loading') }}
       </div>
@@ -84,7 +87,7 @@ function select(folder: StorageFolder | null): void {
           </button>
         </div>
 
-        <div v-if="store.state.expanded.has(folder.id)">
+        <div v-if="store.state.expanded.has(folder.id) && store.childrenOf(folder.id).length">
           <FolderTree :folders="store.childrenOf(folder.id)" :depth="depth + 1" />
         </div>
       </div>

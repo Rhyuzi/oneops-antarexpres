@@ -8,11 +8,14 @@
  *  warnings (need explicit confirmation): duplicate Resi, empty Resi,
  *            kecamatan missing / still ambiguous after the Kota_Tujuan →
  *            wilayah mapping, unknown COD values
+ *  notices  (information only, never blocking): empty cells per row/column,
+ *            blank rows, empty columns, KOTA PENERIMA rows that will use the
+ *            Kota_Tujuan fallback (hub without a label)
  *
  * Pure (no I/O): the kodepos lookup is passed in, exactly as for the run.
  */
 
-const { REQUIRED_COLUMNS, normalizeResi, codCategory } = require("./transform");
+const { REQUIRED_COLUMNS, normalizeResi, codCategory, detectEmpty, isEmptyCell } = require("./transform");
 
 const LIST_CAP = 200;
 
@@ -22,11 +25,15 @@ function norm(h) {
 
 /**
  * @param {{headers: string[], rows: unknown[][]}} table
- * @param {{lookupKodepos: (kecamatan: string, kota: string) => {kodepos: string|null, status: string, options?: string[]}}} opts
+ * @param {{lookupKodepos: (kecamatan: string, kota: string) => {kodepos: string|null, status: string, options?: string[]},
+ *          lookupKotaPenerima?: (meta: object, kotaTujuan: string) => {source: string, reason: string|null, hub: string|null, label: string}}} opts
  */
-function precheckTemplate(table, { lookupKodepos }) {
+function precheckTemplate(table, { lookupKodepos, lookupKotaPenerima = null }) {
   const idx = (name) => table.headers.findIndex((h) => norm(h) === norm(name));
-  const rows = table.rows.filter((r) => r.some((c) => c !== "" && c !== null && c !== undefined));
+  const numbered = table.rows.map((r, i) => ({ r, n: table.rowNumbers ? table.rowNumbers[i] : i + 2 }));
+  const kept = numbered.filter((x) => !x.r.every(isEmptyCell));
+  const lastDataRow = kept.length ? kept[kept.length - 1].n : 0;
+  const rows = kept.map((x) => x.r);
   const errors = [];
   const missingColumns = REQUIRED_COLUMNS.filter((c) => idx(c) < 0);
   if (missingColumns.length) errors.push({ code: "MISSING_COLUMNS", columns: missingColumns });
@@ -37,8 +44,40 @@ function precheckTemplate(table, { lookupKodepos }) {
     errors,
     warnings: [],
     counts: { rows: rows.length, uniqueResi: 0, cod: 0, nonCod: 0 },
+    notices: { empty: null, kotaPenerima: null },
   };
   if (errors.length) return result;
+
+  // Notices: empty data (row + column) and the KOTA PENERIMA fallback preview.
+  result.notices.empty = detectEmpty({
+    headers: table.headers,
+    rows,
+    rowNumbers: kept.map((x) => x.n),
+    blankRows: numbered.filter((x) => x.n < lastDataRow && x.r.every(isEmptyCell)).map((x) => x.n),
+  });
+  if (lookupKotaPenerima) {
+    const gc = idx("Kode Gerai Terakhir");
+    const gn = idx("Nama Gerai Terakhir");
+    const kt = idx("Kota_Tujuan");
+    const cell = (r, i) => (i < 0 || isEmptyCell(r[i]) ? "" : String(r[i]).trim());
+    const groups = new Map();
+    let mapped = 0;
+    let fallback = 0;
+    for (const r of rows) {
+      const kota = cell(r, kt);
+      const res = lookupKotaPenerima({ geraiCode: cell(r, gc), geraiName: cell(r, gn) }, kota);
+      if (res.source === "mapping") {
+        mapped++;
+        continue;
+      }
+      fallback++;
+      const key = `${res.reason}|${res.hub || ""}|${kota}`;
+      const g = groups.get(key) || { reason: res.reason, hub: res.hub, kotaTujuan: kota, label: res.label, count: 0 };
+      g.count++;
+      groups.set(key, g);
+    }
+    result.notices.kotaPenerima = { mapped, fallback, fallbackGroups: [...groups.values()].sort((a, b) => b.count - a.count).slice(0, LIST_CAP) };
+  }
 
   const ri = idx("Resi");
   const ki = idx("Kecamatan Tujuan");

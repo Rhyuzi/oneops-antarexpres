@@ -92,6 +92,9 @@ const config = {
     recheckDelayMs: int(env.LOADER_RECHECK_DELAY_MS, 400),
     recheckMaxRetries: int(env.LOADER_RECHECK_MAX_RETRIES, 3),
     maxAwbPerJob: int(env.LOADER_MAX_AWB_PER_JOB, 3000),
+    // Result 3PL (Data Warrior JNE layout)
+    senderPhone: String(env.LOADER_SENDER_PHONE || "6282121221355").replace(/\D/g, "") || "6282121221355",
+    jneService: String(env.LOADER_JNE_SERVICE || "REG").trim() || "REG",
   },
 
   // --- Bootstrap admin ------------------------------------------------------

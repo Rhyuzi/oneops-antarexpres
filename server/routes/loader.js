@@ -24,11 +24,10 @@
  *   GET  /api/loader/download/:id               loader.run — .xlsx attachment, owner only
  *
  * Reference + settings:
+ * Reference data — READ-ONLY here (all changes: /api/master-data, routes/masterData.js):
  *   GET  /api/loader/reference/summary | /reference         loader.view
- *   POST /api/loader/reference/import                       loader.manage_reference
  *   GET  /api/loader/settings/kota-wilayah                  loader.view
- *   POST /api/loader/settings/kota-wilayah                  loader.manage_settings
- *   DELETE /api/loader/settings/kota-wilayah/:id            loader.manage_settings
+ *   GET  /api/loader/settings/hubs                          loader.view (gerai/HUB → KOTA PENERIMA)
  *
  * Files travel as base64 in JSON (no multipart dependency).
  */
@@ -41,8 +40,8 @@ const { credentialsFromRequest } = require("../recheck/sicepatClient");
 const { config } = require("../config");
 const service = require("../loader/service");
 const { precheckTemplate, uniqueResiList } = require("../loader/precheck");
-const { parseMasterWorkbook, upsertReference } = require("../loader/kodepos");
 const settings = require("../loader/settings");
+const hubs = require("../loader/hubs");
 const jobs = require("../loader/jobs");
 
 const router = express.Router();
@@ -107,6 +106,8 @@ function auditSummary(report) {
     phones_from_rechecked: report.phone.fromRechecked,
     phones_invalid: report.phone.invalid.length,
     unknown_cod: report.unknownCod.length,
+    kota_penerima_fallback: report.kotaPenerima ? report.kotaPenerima.fallback : 0,
+    empty_cells: report.empty ? report.empty.cells : 0,
   };
 }
 
@@ -186,7 +187,10 @@ async function runPrecheck(body) {
   const wilayah = wilayahOf(body);
   const table = service.readTemplate(template.buffer, template.name);
   const lookupData = await service.loadLookupData();
-  const precheck = precheckTemplate(table, { lookupKodepos: service.makeLookup({ ...lookupData, wilayah }) });
+  const precheck = precheckTemplate(table, {
+    lookupKodepos: service.makeLookup({ ...lookupData, wilayah }),
+    lookupKotaPenerima: hubs.buildHubLookup(lookupData.hubs),
+  });
   return { template, table, wilayah, lookupData, precheck };
 }
 
@@ -231,6 +235,7 @@ router.post("/jobs", requirePermission("loader.run"), requirePermission("loader.
       wilayah,
       reference: lookupData.reference,
       kotaMap: lookupData.kotaMap,
+      hubs: lookupData.hubs,
       awbs,
       credentials,
       precheck,
@@ -330,32 +335,6 @@ router.get("/reference", async (req, res) => {
   }
 });
 
-router.post("/reference/import", requirePermission("loader.manage_reference"), async (req, res) => {
-  try {
-    const file = decodeFile(req.body && req.body.file, "master");
-    let parsed;
-    try {
-      parsed = parseMasterWorkbook(file.buffer);
-    } catch (_) {
-      throw badRequest(`The file "${file.name}" could not be read as Excel.`);
-    }
-    if (!parsed.rows.length) {
-      throw badRequest("No kecamatan/kodepos rows were found. Each sheet needs a header row: Kecamatan | Kode Pos.");
-    }
-    const result = await upsertReference(parsed.rows);
-    await logAudit({
-      req,
-      action: "loader.reference_imported",
-      entityType: "kebutuhan_loader",
-      description: `Imported kodepos reference "${file.name}" (${parsed.rows.length} rows, ${result.inserted} new)`,
-      metadata: { file: file.name, sheets: parsed.sheets, rows: parsed.rows.length, inserted: result.inserted, total: result.total },
-    });
-    return res.json({ ok: true, ...result, rows: parsed.rows.length, sheets: parsed.sheets, custIds: parsed.custIds });
-  } catch (err) {
-    return fail(res, err);
-  }
-});
-
 // --- settings: Kota_Tujuan → wilayah -------------------------------------------------------
 
 router.get("/settings/kota-wilayah", async (_req, res) => {
@@ -369,39 +348,19 @@ router.get("/settings/kota-wilayah", async (_req, res) => {
   }
 });
 
-router.post("/settings/kota-wilayah", requirePermission("loader.manage_settings"), async (req, res) => {
-  try {
-    const body = req.body || {};
-    const r = await settings.saveKotaMapping({ kota: body.kota, wilayah: body.wilayah, userId: req.user.id });
-    await logAudit({
-      req,
-      action: r.before ? "loader.kota_mapping_updated" : "loader.kota_mapping_created",
-      entityType: "loader_kota_wilayah",
-      entityId: r.id,
-      before: r.before,
-      after: r.after,
-      metadata: { kota: r.after.kota },
-    });
-    return res.json({ ok: true, id: r.id, mapping: r.after });
-  } catch (err) {
-    return fail(res, err);
-  }
-});
+// --- gerai / HUB → KOTA PENERIMA (Result 3PL) -----------------------------------------
 
-router.delete("/settings/kota-wilayah/:id", requirePermission("loader.manage_settings"), async (req, res) => {
+function hubTableMissing(res) {
+  return res.status(503).json({ ok: false, message: "Hub settings are not installed. Run database/migrations/012_loader_hub_kota.sql." });
+}
+
+router.get("/settings/hubs", async (_req, res) => {
   try {
-    const row = await settings.deleteKotaMapping(req.params.id);
-    if (!row) return res.status(404).json({ ok: false, message: "Mapping not found." });
-    await logAudit({
-      req,
-      action: "loader.kota_mapping_deleted",
-      entityType: "loader_kota_wilayah",
-      entityId: Number(row.id),
-      before: { kota: row.kota, wilayah: row.wilayah, source: row.source },
-      metadata: { kota: row.kota },
-    });
-    return res.json({ ok: true });
+    // loadHubs() returns [] without the table; report it explicitly here.
+    await query("SELECT 1 FROM loader_hub_kota LIMIT 1");
+    return res.json({ ok: true, hubs: await hubs.loadHubs() });
   } catch (err) {
+    if (hubs.isMissingTable(err)) return hubTableMissing(res);
     return fail(res, err);
   }
 });

@@ -66,6 +66,32 @@ const routes = [
         component: () => import('../views/KodeposLoaderView.vue'),
         meta: { titleKey: 'nav.kodeposLoader', permission: 'loader.view' },
       },
+      // Master Data — loader reference data CRUD (one route per tab).
+      { path: 'master-data', redirect: { name: 'master-data-hubs' } },
+      {
+        path: 'master-data/hubs',
+        name: 'master-data-hubs',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdHubs', permission: 'master_data.view', tab: 'hubs' },
+      },
+      {
+        path: 'master-data/kota-wilayah',
+        name: 'master-data-kota-wilayah',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdKotaWilayah', permission: 'master_data.view', tab: 'kota-wilayah' },
+      },
+      {
+        path: 'master-data/kodepos',
+        name: 'master-data-kodepos',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdKodepos', permission: 'master_data.view', tab: 'kodepos' },
+      },
+      {
+        path: 'master-data/audit',
+        name: 'master-data-audit',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdAudit', permission: 'master_data.audit', tab: 'audit' },
+      },
       {
         path: 'access-management/roles',
         name: 'access-management-roles',
@@ -153,6 +179,7 @@ router.beforeEach(async (to) => {
       if (auth.can('data_warrior.view')) return { name: 'data-warrior' }
       if (auth.can('number_rechecking.view')) return { name: 'number-rechecking' }
       if (auth.can('loader.view')) return { name: 'kodepos-loader' }
+      if (auth.can('master_data.view')) return { name: 'master-data-hubs' }
       if (auth.can('account_management.view')) return { name: 'access-management-accounts' }
       if (auth.can('audit_trail.view')) return { name: 'audit-trail' }
     }

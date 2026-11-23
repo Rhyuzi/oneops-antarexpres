@@ -8,9 +8,12 @@
 
 const path = require("path");
 const { transformTemplate, LoaderInputError } = require("./transform");
-const { readTable, readRechecked, writeLoaderWorkbook } = require("./excel");
+const { readTable, readRechecked, writeWorkbook } = require("./excel");
 const { buildKodeposLookup, loadReference } = require("./kodepos");
 const { loadKotaMap } = require("./settings");
+const { buildHubLookup, loadHubs } = require("./hubs");
+const { buildJneSheet, JNE_HEADERS, JNE_SHEET, JNE_SHEET_STYLE } = require("./jne");
+const { config } = require("../config");
 
 // Digits only, ≤ 15 (CUST ID is written as an Excel number; 15 digits keep full precision).
 const CUST_ID_RE = /^\d{1,15}$/;
@@ -37,8 +40,8 @@ function outputFileName(templateName) {
   return `LOADER - ${safe}.xlsx`;
 }
 
-/** Reference rows + Kota_Tujuan mapping (injectable for tests). */
-async function loadLookupData({ referenceRows = null, kotaMap = null } = {}) {
+/** Reference rows + Kota_Tujuan mapping + gerai/HUB master (injectable for tests). */
+async function loadLookupData({ referenceRows = null, kotaMap = null, hubs = null } = {}) {
   const reference = referenceRows || (await loadReference());
   if (!reference.length) {
     throw new LoaderInputError(
@@ -48,7 +51,8 @@ async function loadLookupData({ referenceRows = null, kotaMap = null } = {}) {
   }
   // Tests inject referenceRows without a DB → mapping defaults to none.
   const mapping = kotaMap || (referenceRows ? [] : await loadKotaMap());
-  return { reference, kotaMap: mapping };
+  const hubRows = hubs || (referenceRows ? [] : await loadHubs());
+  return { reference, kotaMap: mapping, hubs: hubRows };
 }
 
 /** The kodepos lookup used by both the pre-check and the run. */
@@ -60,7 +64,10 @@ function makeLookup({ reference, kotaMap, wilayah }) {
  * Rules 1–16 for an already-read template, with the phone source given as a
  * Map (normalized resi → phone) — from a rechecked file OR from the API queue.
  */
-async function buildLoaderFile({ table, templateName, rechecked, recheckedMeta, ids, wilayah, reference, kotaMap, convertWeight = true }) {
+async function buildLoaderFile({
+  table, templateName, rechecked, recheckedMeta, ids, wilayah, reference, kotaMap,
+  hubs = [], convertWeight = true, senderPhone = config.loader.senderPhone, date,
+}) {
   const result = transformTemplate(table, {
     rechecked,
     convertWeight: convertWeight !== false,
@@ -68,14 +75,25 @@ async function buildLoaderFile({ table, templateName, rechecked, recheckedMeta, 
     custIdCod: ids.cod,
     custIdNonCod: ids.nonCod,
   });
-  const buffer = await writeLoaderWorkbook(result.headers, result.rows);
+  // The download is ONLY the Loader JNE layout (34 columns). The transformed
+  // rows (TAMPILAN FINAL shape) are an intermediate step and never exported.
+  const jne = buildJneSheet(result, {
+    lookupKotaPenerima: buildHubLookup(hubs),
+    senderPhone,
+    service: config.loader.jneService,
+    ...(date ? { date } : {}),
+  });
+  const buffer = await writeWorkbook([{ name: JNE_SHEET, headers: jne.headers, rows: jne.rows, ...JNE_SHEET_STYLE }]);
   return {
     buffer,
     filename: outputFileName(templateName),
-    headers: result.headers,
+    headers: JNE_HEADERS,
     report: {
       ...result.report,
-      columns: result.headers,
+      kotaPenerima: jne.report,
+      sheets: [JNE_SHEET],
+      senderPhone,
+      columns: JNE_HEADERS,
       template: { name: templateName, sheet: table.sheetName },
       rechecked: recheckedMeta,
       wilayah: wilayah || null,
@@ -103,12 +121,13 @@ async function processLoader({
   wilayah = null,
   referenceRows = null, // injected in tests; DB otherwise
   kotaMap = null,
+  hubs = null, // gerai/HUB master (KOTA PENERIMA); DB otherwise
   convertWeight = true, // Rule 4 switch: Berat from Berat Asli
 }) {
   const ids = validateCustIds(custIdCod, custIdNonCod);
   const table = readTemplate(templateBuffer, templateName);
   const rechecked = readRechecked(recheckedBuffer, recheckedName);
-  const { reference, kotaMap: mapping } = await loadLookupData({ referenceRows, kotaMap });
+  const { reference, kotaMap: mapping, hubs: hubRows } = await loadLookupData({ referenceRows, kotaMap, hubs });
   return buildLoaderFile({
     table,
     templateName,
@@ -118,6 +137,7 @@ async function processLoader({
     wilayah,
     reference,
     kotaMap: mapping,
+    hubs: hubRows,
     convertWeight,
   });
 }

@@ -154,6 +154,16 @@ function summarize(report, recheck) {
     phonesFromSource: report.phone.fromRechecked,
     phonesInvalid: report.phone.invalid.length,
     unknownCod: report.unknownCod.length,
+    // Counts / hub names only — no Resi, names or phone numbers.
+    addressCleaned: report.addressCleaned || 0,
+    emptyCells: report.empty ? report.empty.cells : 0,
+    emptyRows: report.empty ? report.empty.rowsWithEmpty : 0,
+    emptyColumns: report.empty ? report.empty.emptyColumns : [],
+    kotaPenerimaMapped: report.kotaPenerima ? report.kotaPenerima.mapped : 0,
+    kotaPenerimaFallback: report.kotaPenerima ? report.kotaPenerima.fallback : 0,
+    kotaPenerimaFallbackHubs: report.kotaPenerima
+      ? report.kotaPenerima.fallbackGroups.map((g) => ({ hub: g.hub, kotaTujuan: g.kotaTujuan, reason: g.reason, count: g.count }))
+      : [],
   };
   if (recheck) s.recheck = { total: recheck.total, success: recheck.success, failed: recheck.failed, byCode: recheck.byCode };
   return s;
@@ -203,7 +213,7 @@ function audit(job, action, extra = {}, result = "success") {
  * Starts an API-mode job (returns immediately; work continues in background).
  * Caller has validated input, run the pre-check and checked permissions.
  */
-async function startApiJob({ userId, table, templateName, ids, wilayah, reference, kotaMap, awbs, credentials, precheck, convertWeight = true, client = lookupAwb, queueOptions }) {
+async function startApiJob({ userId, table, templateName, ids, wilayah, reference, kotaMap, hubs = [], awbs, credentials, precheck, convertWeight = true, client = lookupAwb, queueOptions }) {
   if (hasActiveJob(userId)) {
     const e = new Error("You already have a loader recheck job running. Wait for it to finish or cancel it.");
     e.status = 409;
@@ -222,6 +232,7 @@ async function startApiJob({ userId, table, templateName, ids, wilayah, referenc
     wilayah,
     reference,
     kotaMap,
+    hubs,
     convertWeight: convertWeight !== false,
     awbs,
     awbByKey: new Map(awbs.map((a) => [a.key, a.awb])),
@@ -307,6 +318,7 @@ async function runJob(job) {
       wilayah: job.wilayah,
       reference: job.reference,
       kotaMap: job.kotaMap,
+      hubs: job.hubs,
       convertWeight: job.convertWeight,
     });
     job.download = storeResult(job.userId, out.buffer, out.filename);
@@ -325,6 +337,7 @@ async function runJob(job) {
     // Free the big objects; keep the report for the owner to read.
     job.table = null;
     job.reference = null;
+    job.hubs = null;
     scheduleForget(job);
   }
 }

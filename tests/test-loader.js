@@ -21,6 +21,25 @@ const ExcelJS = require("exceljs");
 const T = require("../server/loader/transform");
 const { buildKodeposLookup, parseMasterWorkbook, keyOf } = require("../server/loader/kodepos");
 const { processLoader, validateCustIds, outputFileName } = require("../server/loader/service");
+const { JNE_HEADERS, JNE_SHEET, buildJneSheet } = require("../server/loader/jne");
+
+/**
+ * The Loader JNE layout, written out literally (NOT imported) so the test pins
+ * the exact list and order of the 34 columns of the Data Warrior sheets
+ * "Sukaraja" / "Loader Rajapolah  Ciawi".
+ */
+const LOADER_JNE_34 = [
+  "TGL DROP", "STATUS", "CATEGORY", "NO RESI SICEPAT", "RESI JNE", "SS", "NAMA PENERIMA",
+  "ALAMAT PENERIMA", "KOTA PENERIMA", "KODE POS PENERIMA", "KECAMATAN PENERIMA",
+  "PROVINSI PENERIMA", "KONTAK PENERIMA", "NO HANDPHONE PENERIMA", "JUMLAH PACKING",
+  "BERAT/KG", "DESKRIPSI BARANG", "HARGA BARANG", "KETERANGAN", "SERVICE",
+  "ORDER ID / REFERENCE NUMBER", "PACKING KAYU", "ASURANSI", "COD", "HARGA COD",
+  "NAMA PENGIRIM", "ALAMAT PENGIRIM", "KOTA PENGIRIM", "KECAMATAN PENGIRIM",
+  "KODE POST PENGIRIM", "PROVINSI PENGIRIM", "KONTAK PENGIRIM", "NO HANDPHONE PENGIRIM",
+  "CUSTOMER ID",
+];
+/** 1-based column of a Loader JNE header. */
+const jc = (h) => LOADER_JNE_34.indexOf(h) + 1;
 
 let passed = 0;
 let failed = 0;
@@ -266,9 +285,11 @@ function toXlsx(headers, rows, sheet = "Sheet1") {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([headers, ...rows]), sheet);
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 }
+/** The output sheet (the workbook has exactly one: Loader JNE). */
 async function readBack(buffer) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer);
+  assert.strictEqual(wb.worksheets.length, 1, "the export must have exactly one sheet");
   return wb.worksheets[0];
 }
 // --- Weight conversion switch (Rule 4 on/off) ------------------------------------
@@ -335,7 +356,7 @@ test("styled output: Titillium Web 9, bold header, thin borders everywhere, numb
     referenceRows: REF,
   });
   const ws = await readBack(res.buffer);
-  assert.deepStrictEqual(ws.getRow(1).values.slice(1), FINAL);
+  assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_JNE_34);
   ws.eachRow((r, rn) => r.eachCell({ includeEmpty: true }, (cell) => {
     assert.strictEqual(cell.font.name, "Titillium Web");
     assert.strictEqual(cell.font.size, 9);
@@ -344,18 +365,15 @@ test("styled output: Titillium Web 9, bold header, thin borders everywhere, numb
     assert.ok(!(cell.value && typeof cell.value === "object" && "formula" in cell.value), "formula found");
   }));
   const r = ws.getRow(2); // resi 1 after sort (first data row)
-  const col = (h) => FINAL.indexOf(h) + 1;
-  assert.strictEqual(r.getCell(col("Resi")).value, 1);
-  assert.strictEqual(r.getCell(col("Resi")).numFmt, "000000000000"); // shows 000000000001
-  assert.strictEqual(r.getCell(col("No HP Penerima")).value, 6281234567890);
-  assert.strictEqual(r.getCell(col("No HP Penerima")).numFmt, "0");
-  assert.strictEqual(typeof r.getCell(col("Nilai Barang")).value, "number");
-  assert.strictEqual(typeof r.getCell(col("Berat")).value, "number");
-  assert.strictEqual(r.getCell(col("COD")).value, "Y");
-  assert.strictEqual(r.getCell(col("CUST ID")).value, 82220300); // numeric cell
-  assert.strictEqual(r.getCell(col("CUST ID")).numFmt, "0");
-  assert.strictEqual(r.getCell(col("Berat Asli")).value, 0.75); // kept, unchanged
-  assert.strictEqual(r.getCell(col("Berat")).value, 1);
+  assert.strictEqual(r.getCell(jc("NO RESI SICEPAT")).value, 1);
+  assert.strictEqual(r.getCell(jc("NO RESI SICEPAT")).numFmt, "000000000000"); // shows 000000000001
+  assert.strictEqual(r.getCell(jc("NO HANDPHONE PENERIMA")).value, 6281234567890);
+  assert.strictEqual(r.getCell(jc("NO HANDPHONE PENERIMA")).numFmt, "0");
+  assert.strictEqual(typeof r.getCell(jc("HARGA BARANG")).value, "number");
+  assert.strictEqual(r.getCell(jc("BERAT/KG")).value, 1); // Berat 2 → 1 from Berat Asli 0.75
+  assert.strictEqual(r.getCell(jc("COD")).value, "Y");
+  assert.strictEqual(r.getCell(jc("CUSTOMER ID")).value, 82220300); // numeric cell
+  assert.strictEqual(r.getCell(jc("CUSTOMER ID")).numFmt, "0");
 });
 
 // =============================================================================
@@ -495,10 +513,6 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
   section("Sample files in ./tmp (real data)");
   const master = parseMasterWorkbook(fs.readFileSync(SAMPLE_MASTER));
   const templateBuf = fs.readFileSync(SAMPLE_TEMPLATE);
-  // TAMPILAN FINAL layout, with "Status Terakhir" renamed to "CUST ID" (Rule 10).
-  const finalHeaders = XLSX.utils.sheet_to_json(XLSX.read(fs.readFileSync(SAMPLE_MASTER)).Sheets["TAMPILAN FINAL"], { header: 1 })[0]
-    .map((h) => (h === "Status Terakhir" ? "CUST ID" : h))
-    .flatMap((h) => (h === "Berat" ? ["Berat", "Berat Asli"] : [h])); // Berat Asli kept, right of Berat
 
   test("master: 4 wilayah, de-duplicated, cust-id side tables read", () => {
     assert.deepStrictEqual(master.sheets.map((s) => s.wilayah), ["TASIK", "GARUT", "SUBANG", "SUKABUMI"]);
@@ -506,7 +520,7 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
     assert.deepStrictEqual(master.custIds.SUBANG, { N: "82220303", Y: "82220300" });
   });
 
-  test("real template + sample rechecked: TAMPILAN FINAL layout, all kodepos, nothing guessed", async () => {
+  test("real template + sample rechecked: Loader JNE layout (34 columns), all kodepos, nothing guessed", async () => {
     const res = await processLoader({
       templateBuffer: templateBuf,
       templateName: path.basename(SAMPLE_TEMPLATE),
@@ -517,7 +531,7 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
       referenceRows: master.rows,
     });
     const rep = res.report;
-    assert.deepStrictEqual(res.headers, finalHeaders);
+    assert.deepStrictEqual(res.headers, LOADER_JNE_34);
     assert.strictEqual(rep.rows, 119);
     assert.strictEqual(rep.cod + rep.nonCod, 119);
     assert.deepStrictEqual({ cod: rep.cod, nonCod: rep.nonCod }, { cod: 47, nonCod: 72 });
@@ -527,13 +541,16 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
     assert.strictEqual(rep.phone.notInRechecked.length, 119);
     assert.strictEqual(rep.phone.invalid.length, 119); // masked template numbers are flagged, not passed off as valid
     const ws = await readBack(res.buffer);
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_JNE_34);
+    assert.strictEqual(ws.rowCount, 120);
     const first = ws.getRow(2);
-    assert.strictEqual(first.getCell(1).numFmt, "000000000000");
-    assert.strictEqual(String(first.getCell(1).value).length <= 12, true);
-    // Rows are sorted by original Berat; every Berat is a number ≥ 1.
+    assert.strictEqual(first.getCell(jc("NO RESI SICEPAT")).numFmt, "000000000000");
+    assert.strictEqual(String(first.getCell(jc("NO RESI SICEPAT")).value).length <= 12, true);
+    // Rows are sorted by the written Berat; every BERAT/KG is a number ≥ 1.
     const berat = [];
-    ws.eachRow((r, rn) => rn > 1 && berat.push(r.getCell(2).value));
+    ws.eachRow((r, rn) => rn > 1 && berat.push(r.getCell(jc("BERAT/KG")).value));
     assert.ok(berat.every((b) => typeof b === "number" && b >= 1));
+    assert.ok(berat.every((b, i) => i === 0 || berat[i - 1] <= b), "sorted by BERAT/KG");
   });
 
   test("real template + rechecked built from its own resi: phones replaced and normalized", async () => {
@@ -554,10 +571,12 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
     const ws = await readBack(res.buffer);
     ws.eachRow((r, rn) => {
       if (rn === 1) return;
-      assert.ok(/^628\d{7,11}$/.test(String(r.getCell(5).value)), `row ${rn}: ${r.getCell(5).value}`);
-      assert.ok([82220300, 82220303].includes(r.getCell(14).value), `CUST ID not numeric: ${r.getCell(14).value}`);
-      assert.ok(["Y", "N"].includes(r.getCell(12).value));
-      assert.strictEqual(typeof r.getCell(3).value, "number"); // Berat Asli kept
+      const hp = r.getCell(jc("NO HANDPHONE PENERIMA")).value;
+      assert.ok(/^628\d{7,11}$/.test(String(hp)), `row ${rn}: ${hp}`);
+      assert.ok([82220300, 82220303].includes(r.getCell(jc("CUSTOMER ID")).value), `CUSTOMER ID not numeric: ${r.getCell(jc("CUSTOMER ID")).value}`);
+      assert.ok(["Y", "N"].includes(r.getCell(jc("COD")).value));
+      assert.strictEqual(r.getCell(jc("RESI JNE")).value, null);
+      assert.strictEqual(r.getCell(jc("NO HANDPHONE PENGIRIM")).value, 6282121221355);
     });
   });
 } else {
@@ -581,6 +600,358 @@ if (fs.existsSync(SAMPLE_BANJAR) && fs.existsSync(SAMPLE_MASTER)) {
     assert.deepStrictEqual(withMap.counts, { rows: 209, uniqueResi: 209, cod: 56, nonCod: 153 });
     assert.strictEqual(uniqueResiList(table).length, 209);
   });
+  test("BANJAR (no gerai columns): every row uses the Kota_Tujuan fallback for KOTA PENERIMA (reported)", () => {
+    const { readTemplate } = require("../server/loader/service");
+    const ref = parseMasterWorkbook(fs.readFileSync(SAMPLE_MASTER)).rows;
+    const table = readTemplate(fs.readFileSync(SAMPLE_BANJAR), "LOADER BANJAR 20 NOV.xlsx");
+    const pc = precheckTemplate(table, { lookupKodepos: buildKodeposLookup(ref), lookupKotaPenerima: buildHubLookup([]) });
+    assert.strictEqual(pc.notices.kotaPenerima.fallback, 209);
+    assert.ok(pc.notices.kotaPenerima.fallbackGroups.every((g) => g.reason === "no_gerai"));
+    assert.deepStrictEqual(pc.notices.kotaPenerima.fallbackGroups.map((g) => g.kotaTujuan).sort(), ["Kab. Ciamis", "Kota Banjar"]);
+  });
+}
+
+// =============================================================================
+section("Loader JNE — the export layout (34 columns, one sheet)");
+const { buildHubLookup, parseDatahub, seedSql, defaultNamaPengirim, keyOf: hubKey } = require("../server/loader/hubs");
+const { config: appConfig } = require("../server/config");
+const HUBS = [
+  { hub: "Sukabumi Sagaranten LM", analytic_code: "A1203010", city: "Sukabumi", kota_penerima: "Kab. Sukabumi Sgr", nama_pengirim: null },
+  { hub: "Sukabumi Jampang Kulon LM", analytic_code: "A1203009", city: "Sukabumi", kota_penerima: "Kab. Sukabumi Jp", nama_pengirim: "SICEPAT JAMPANG" },
+  { hub: "Subang Sukamelang LM", analytic_code: "A1218004", city: "Subang", kota_penerima: null, nama_pengirim: null },
+];
+// SYNTH + gerai columns: resi 1/3 Sagaranten (by code), resi 2 Sukamelang (by name, no label), resi 4 unknown hub.
+const SYNTH_JNE = {
+  headers: HEADERS,
+  rows: SYNTH.rows.map((r) => {
+    const out = [...r];
+    const resi = r[HEADERS.indexOf("Resi")];
+    const set = (h, v) => (out[HEADERS.indexOf(h)] = v);
+    if (resi === "000000000001" || resi === "000000000003") { set("Kode Gerai Terakhir", "a1203010"); set("Nama Gerai Terakhir", "whatever"); }
+    if (resi === "000000000002") { set("Kode Gerai Terakhir", ""); set("Nama Gerai Terakhir", "SUBANG  sukamelang lm"); }
+    if (resi === "000000000004") { set("Kode Gerai Terakhir", "Z999"); set("Nama Gerai Terakhir", "Nowhere LM"); }
+    if (resi === "000000000001") set("Alamat Penerima", "Jl. Mawar No. 1\r\nRT 01/RW 02\nDesa  Cibogo\r  ");
+    return out;
+  }),
+};
+const jneRun = (extra = {}) =>
+  processLoader({
+    templateBuffer: toXlsx(SYNTH_JNE.headers, SYNTH_JNE.rows),
+    templateName: "TEMPLATE 3PL - jne.xlsx",
+    recheckedBuffer: toXlsx(["Resi", "No HP Penerima"], [[1, "081234567890"], [2, "0812 2222 3333"], [3, "6208571234567"], [4, "85711112222"]], "Sheet2"),
+    recheckedName: "r.xlsx",
+    custIdCod: "82220300",
+    custIdNonCod: "82220303",
+    referenceRows: REF,
+    hubs: HUBS,
+    ...extra,
+  });
+const jneRows = (ws) => {
+  const rows = [];
+  ws.eachRow((r, n) => {
+    if (n === 1) return;
+    const o = {};
+    JNE_HEADERS.forEach((h, i) => (o[h] = r.getCell(i + 1).value));
+    o.__row = r;
+    rows.push(o);
+  });
+  return rows;
+};
+const byResiJne = (rows, resi) => rows.find((r) => r["NO RESI SICEPAT"] === Number(resi));
+
+test("COD normalization: COD/Y/YA/TRUE/1 → Y, NON-COD/NON COD/N/NO/FALSE/0 → N, others unknown", () => {
+  for (const v of ["COD", "cod ", "Y", "y", "YA", "Yes", "TRUE", "true", "1", 1, true]) assert.strictEqual(T.codCategory(v), "cod", String(v));
+  for (const v of ["NON-COD", "NON COD", "non_cod", "NONCOD", "N", "NO", "Tidak", "FALSE", "0", 0, false]) assert.strictEqual(T.codCategory(v), "noncod", String(v));
+  for (const v of ["REG", "", null, undefined, "2", "COD?"]) assert.strictEqual(T.codCategory(v), null, String(v));
+});
+test("address cleanup: CR/LF/CRLF → one space, extra spaces collapsed", () => {
+  assert.strictEqual(T.cleanAddress("Jl. Mawar No. 1\r\nRT 01/RW 02\nDesa  Cibogo\r  "), "Jl. Mawar No. 1 RT 01/RW 02 Desa Cibogo");
+  assert.strictEqual(T.cleanAddress("  a \n\n\n b  "), "a b");
+  assert.strictEqual(T.cleanAddress(null), "");
+});
+test("KOTA PENERIMA lookup: code / name match → label; no label / unknown / no gerai → Kota_Tujuan fallback", () => {
+  const look = buildHubLookup(HUBS);
+  assert.deepStrictEqual(look({ geraiCode: "A1203010", geraiName: "" }, "Kab. Sukabumi"),
+    { label: "Kab. Sukabumi Sgr", namaPengirim: "SICEPAT SUKABUMI", source: "mapping", reason: null, hub: "Sukabumi Sagaranten LM" });
+  const jp = look({ geraiCode: "", geraiName: "sukabumi jampang-kulon LM" }, "Kab. Sukabumi");
+  assert.strictEqual(jp.label, "Kab. Sukabumi Jp");
+  assert.strictEqual(jp.namaPengirim, "SICEPAT JAMPANG"); // override from settings
+  assert.deepStrictEqual(look({ geraiCode: "A1218004", geraiName: "" }, " Kab. Subang "),
+    { label: "Kab. Subang", namaPengirim: "SICEPAT SUBANG", source: "fallback", reason: "no_label", hub: "Subang Sukamelang LM" });
+  assert.strictEqual(look({ geraiCode: "Z1", geraiName: "Mars LM" }, "Kota Banjar").reason, "unknown_hub");
+  const none = look({ geraiCode: "", geraiName: "" }, "Kota Banjar");
+  assert.deepStrictEqual([none.reason, none.label, none.namaPengirim], ["no_gerai", "Kota Banjar", "SICEPAT BANJAR"]);
+  assert.strictEqual(defaultNamaPengirim("Kab. Ciamis"), "SICEPAT CIAMIS");
+});
+test("JNE_HEADERS = exactly the 34 Loader JNE columns, in order", () => {
+  assert.deepStrictEqual(JNE_HEADERS, LOADER_JNE_34);
+  assert.strictEqual(JNE_HEADERS.length, 34);
+  assert.strictEqual(new Set(JNE_HEADERS).size, 34);
+});
+test("Loader JNE sample: the module's headers equal the 'Sukaraja' / 'Loader Rajapolah  Ciawi' header rows", () => {
+  const sample = path.join(__dirname, "..", "tmp", "DATA WARRIOR - UPDATE JNE TASIKMALAYA - Copy.xlsx");
+  if (!fs.existsSync(sample)) return; // customer data — only present locally
+  const wb = XLSX.readFile(sample, { sheetRows: 1 });
+  const header = (name) => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" })[0].map((h) => String(h).trim());
+  // Same 34 columns in the same order. Renamed on purpose (operator request):
+  // TANGGAL / Tgl Drop → TGL DROP, UPDATE → STATUS, RESI SICEPAT → NO RESI
+  // SICEPAT; the spare "SS" / "sss" separator is spelled differently per sheet.
+  const RENAMED = { 0: "TGL DROP", 1: "STATUS", 3: "NO RESI SICEPAT", 5: "SS" };
+  const norm = (hs) => hs.map((h, i) => (i in RENAMED ? RENAMED[i] : h.toUpperCase()));
+  assert.deepStrictEqual(header("Sukaraja").slice(1, 4).map((h) => h.toUpperCase()), ["UPDATE", "CATEGORY", "RESI SICEPAT"]);
+  assert.deepStrictEqual(norm(header("Sukaraja")), JNE_HEADERS);
+  assert.deepStrictEqual(norm(header("Loader Rajapolah  Ciawi")), JNE_HEADERS);
+});
+test("export workbook: ONE sheet (Loader JNE), no old 3PL/TAMPILAN FINAL columns", async () => {
+  const res = await jneRun();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(res.buffer);
+  assert.deepStrictEqual(wb.worksheets.map((w) => w.name), [JNE_SHEET]);
+  assert.deepStrictEqual(res.report.sheets, [JNE_SHEET]);
+  assert.deepStrictEqual(res.report.columns, LOADER_JNE_34);
+  const headers = wb.worksheets[0].getRow(1).values.slice(1);
+  for (const old of ["Resi", "Berat", "Berat Asli", "Penerima", "No HP Penerima", "Kota_Tujuan", "KODEPOS", "Kecamatan Tujuan", "Nilai Barang", "Nilai COD", "CUST ID", "Status Terakhir"]) {
+    assert.ok(!headers.includes(old), `old layout column "${old}" in the export`);
+  }
+});
+test("JNE headers: the 34 columns in order; RESI JNE header kept, cells empty", async () => {
+  const ws = await readBack((await jneRun()).buffer);
+  const headers = ws.getRow(1).values.slice(1);
+  assert.deepStrictEqual(headers, LOADER_JNE_34);
+  assert.strictEqual(ws.columnCount, 34);
+  for (const h of ["TGL DROP", "STATUS", "NO RESI SICEPAT", "RESI JNE", "KOTA PENERIMA", "NO HANDPHONE PENGIRIM", "CUSTOMER ID"]) assert.ok(headers.includes(h), h);
+  const rows = jneRows(ws);
+  assert.strictEqual(rows.length, 4);
+  assert.ok(rows.every((r) => r["RESI JNE"] === null), "RESI JNE must be empty");
+  for (const h of ["STATUS", "SS", "PROVINSI PENERIMA", "KONTAK PENERIMA", "KETERANGAN", "ALAMAT PENGIRIM", "KONTAK PENGIRIM"]) {
+    assert.ok(rows.every((r) => r[h] === null), `${h} must be empty`);
+  }
+});
+test("JNE header style: Titillium 9 bold, all borders; peach headers, RESI JNE soft blue, SS separator", async () => {
+  const { JNE_HEADER_FILL, RESI_JNE_HEADER_FILL } = require("../server/loader/jne");
+  assert.strictEqual(JNE_HEADER_FILL, "FFF7C7AC");
+  assert.strictEqual(RESI_JNE_HEADER_FILL, "FFBDD7EE");
+  const ws = await readBack((await jneRun()).buffer);
+  const h = ws.getRow(1);
+  LOADER_JNE_34.forEach((name, i) => {
+    const cell = h.getCell(i + 1);
+    assert.strictEqual(cell.value, name);
+    assert.deepStrictEqual([cell.font.name, cell.font.size, cell.font.bold], ["Titillium Web", 9, true], name);
+    for (const side of ["top", "left", "bottom", "right"]) assert.strictEqual(cell.border[side].style, "thin", `${name} ${side}`);
+    if (name === "RESI JNE") assert.strictEqual(cell.fill.fgColor.argb, "FFBDD7EE", "RESI JNE header must be blue");
+    else if (name === "SS") {
+      assert.ok(!cell.fill || cell.fill.type !== "pattern" || !cell.fill.fgColor, "separator has no fill");
+      assert.strictEqual(cell.font.color.argb, "FFFFFFFF", "separator header text invisible");
+    } else assert.strictEqual(cell.fill.fgColor.argb, "FFF7C7AC", `${name} header must be peach`);
+  });
+  assert.strictEqual(ws.getColumn(jc("SS")).width, 3);
+  assert.ok(ws.getColumn(jc("RESI JNE")).width >= 12);
+});
+test("JNE navigation: AutoFilter on A1:AH<last row>; frozen panes after RESI JNE (xSplit 5, ySplit 1, F2)", async () => {
+  const ws = await readBack((await jneRun()).buffer);
+  assert.strictEqual(ws.autoFilter, "A1:AH5"); // header + 4 data rows
+  assert.strictEqual(ws.views.length, 1);
+  const v = ws.views[0];
+  assert.deepStrictEqual([v.state, v.xSplit, v.ySplit, v.topLeftCell], ["frozen", 5, 1, "F2"]);
+  assert.strictEqual(LOADER_JNE_34[v.xSplit - 1], "RESI JNE"); // the last frozen column
+  const { columnLetter } = require("../server/loader/excel");
+  assert.deepStrictEqual([columnLetter(1), columnLetter(26), columnLetter(27), columnLetter(34)], ["A", "Z", "AA", "AH"]);
+});
+test("JNE values: COD Y/N + CATEGORY, HARGA COD 0 for Non-COD, CUSTOMER ID numeric, sender phone 6282121221355", async () => {
+  const res = await jneRun();
+  const rows = jneRows(await readBack(res.buffer));
+  const r1 = byResiJne(rows, "1");
+  const r3 = byResiJne(rows, "3");
+  assert.deepStrictEqual([r1.COD, r1.CATEGORY, r1["CUSTOMER ID"]], ["Y", "COD", 82220300]);
+  assert.deepStrictEqual([r3.COD, r3.CATEGORY, r3["CUSTOMER ID"], r3["HARGA COD"]], ["N", "NON COD", 82220303, 0]);
+  assert.strictEqual(r1["HARGA COD"], 134442);
+  assert.strictEqual(r1["HARGA BARANG"], 134442 - 1 * 2800); // Rule 14, same Berat as BERAT/KG
+  assert.strictEqual(r3["HARGA BARANG"], 10000 * 9 + 500000); // Rule 12
+  assert.ok(rows.every((r) => r["NO HANDPHONE PENGIRIM"] === 6282121221355), "sender phone");
+  assert.strictEqual(appConfig.loader.senderPhone, "6282121221355");
+  assert.ok(rows.every((r) => typeof r["CUSTOMER ID"] === "number" || r.COD === "REG"));
+  assert.strictEqual(r1["NO HANDPHONE PENERIMA"], 6281234567890);
+  assert.strictEqual(r1["ORDER ID / REFERENCE NUMBER"], 1);
+  assert.strictEqual(r1.__row.getCell(JNE_HEADERS.indexOf("NO RESI SICEPAT") + 1).numFmt, "000000000000");
+  assert.strictEqual(r1.SERVICE, "REG");
+  assert.strictEqual(r1["JUMLAH PACKING"], 2); // Koli
+  assert.strictEqual(r1["KODE POS PENERIMA"], 41281);
+  // Unknown COD value (REG) is never turned into Y/N — reported instead.
+  const r4 = byResiJne(rows, "4");
+  assert.deepStrictEqual([r4.COD, r4.CATEGORY], ["REG", null]);
+  assert.strictEqual(res.report.unknownCod.length, 1);
+});
+test("JNE: Alamat on one line; TGL DROP is a dd/mm/yyyy date", async () => {
+  const res = await jneRun();
+  const rows = jneRows(await readBack(res.buffer));
+  const r1 = byResiJne(rows, "1");
+  assert.strictEqual(r1["ALAMAT PENERIMA"], "Jl. Mawar No. 1 RT 01/RW 02 Desa Cibogo");
+  assert.ok(rows.every((r) => !/[\r\n]/.test(String(r["ALAMAT PENERIMA"] || ""))));
+  assert.ok(res.report.addressCleaned >= 1);
+  assert.ok(r1["TGL DROP"] instanceof Date);
+  assert.strictEqual(r1.__row.getCell(1).numFmt, "dd/mm/yyyy");
+});
+test("JNE: KOTA PENERIMA from the hub mapping; fallback rows reported with reason + Excel rows", async () => {
+  const res = await jneRun();
+  const rows = jneRows(await readBack(res.buffer));
+  assert.strictEqual(byResiJne(rows, "1")["KOTA PENERIMA"], "Kab. Sukabumi Sgr");
+  assert.strictEqual(byResiJne(rows, "3")["KOTA PENERIMA"], "Kab. Sukabumi Sgr");
+  assert.strictEqual(byResiJne(rows, "1")["NAMA PENGIRIM"], "SICEPAT SUKABUMI");
+  assert.strictEqual(byResiJne(rows, "2")["KOTA PENERIMA"], "Kab. Subang"); // Kota_Tujuan fallback
+  const kp = res.report.kotaPenerima;
+  assert.deepStrictEqual([kp.mapped, kp.fallback], [2, 2]);
+  const reasons = Object.fromEntries(kp.fallbackGroups.map((g) => [g.reason, g]));
+  assert.strictEqual(reasons.no_label.hub, "Subang Sukamelang LM");
+  assert.deepStrictEqual(reasons.no_label.rows, [4]); // resi 2 = Excel row 4 of the template
+  assert.strictEqual(reasons.unknown_hub.hub, "Nowhere LM");
+});
+test("JNE styling: Titillium Web 9, all borders, bold filled header, no formulas", async () => {
+  const ws = await readBack((await jneRun()).buffer);
+  ws.eachRow((r, rn) => r.eachCell({ includeEmpty: true }, (cell) => {
+    assert.strictEqual(cell.font.name, "Titillium Web");
+    assert.strictEqual(cell.font.size, 9);
+    assert.strictEqual(Boolean(cell.font.bold), rn === 1);
+    for (const side of ["top", "left", "bottom", "right"]) assert.strictEqual(cell.border[side].style, "thin");
+    assert.ok(!(cell.value && typeof cell.value === "object" && "formula" in cell.value));
+  }));
+  assert.strictEqual(ws.getRow(1).getCell(1).fill.fgColor.argb, "FFF7C7AC");
+  assert.strictEqual(ws.getRow(2).getCell(JNE_HEADERS.indexOf("NO HANDPHONE PENGIRIM") + 1).numFmt, "0");
+});
+test("JNE + weight switch: BERAT/KG and HARGA BARANG follow the switch", async () => {
+  const on = jneRows(await readBack((await jneRun()).buffer));
+  const off = jneRows(await readBack((await jneRun({ convertWeight: false })).buffer));
+  assert.deepStrictEqual([byResiJne(on, "3")["BERAT/KG"], byResiJne(off, "3")["BERAT/KG"]], [9, 13]);
+  assert.deepStrictEqual([byResiJne(on, "1")["BERAT/KG"], byResiJne(off, "1")["BERAT/KG"]], [1, 2]);
+  assert.strictEqual(byResiJne(off, "3")["HARGA BARANG"], 10000 * 13 + 500000);
+  assert.deepStrictEqual(off.map((r) => r["NO RESI SICEPAT"]), [4, 1, 2, 3]); // sorted by template Berat
+});
+test("buildJneSheet sender phone is configurable", () => {
+  const t = T.transformTemplate(SYNTH, { rechecked: RECHECKED, lookupKodepos: buildKodeposLookup(REF), custIdCod: "1", custIdNonCod: "2" });
+  const j = buildJneSheet(t, { lookupKotaPenerima: buildHubLookup([]), senderPhone: "6281111111111" });
+  assert.ok(j.rows.every((r) => r[JNE_HEADERS.indexOf("NO HANDPHONE PENGIRIM")] === "6281111111111"));
+});
+
+// =============================================================================
+section("Empty rows / columns warnings");
+const EMPTY_AOA = [
+  HEADERS,
+  row({ Resi: "000000000011", Berat: 1, "Berat Asli": 1, COD: "COD", Biaya: 1, "Nilai Barang": 1, "Nilai COD": "", "Kecamatan Tujuan": "Cibogo", Penerima: "", "Alamat Penerima": "   ", "Nama Barang": "", "Status Terakhir": "x" }),
+  [], // blank Excel row 3
+  row({ Resi: "000000000012", Berat: 1, "Berat Asli": 1, COD: "NON-COD", Biaya: 1, "Nilai Barang": 1, "Nilai COD": "", "Kecamatan Tujuan": "Cibogo", Penerima: "B", "Nama Barang": "", "Status Terakhir": "x" }),
+  row({ Resi: "000000000013", Berat: 1, "Berat Asli": 1, COD: "COD", Biaya: 1, "Nilai Barang": 1, "Nilai COD": 5000, "Kecamatan Tujuan": "Cibogo", Penerima: "C", "Nama Barang": "", "Status Terakhir": "x" }),
+];
+const emptyRun = () => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(EMPTY_AOA), "Sheet1");
+  return processLoader({
+    templateBuffer: XLSX.write(wb, { type: "buffer", bookType: "xlsx" }),
+    templateName: "empty.xlsx",
+    recheckedBuffer: toXlsx(["Resi", "No HP Penerima"], [[11, "081234567890"]], "Sheet2"),
+    recheckedName: "r.xlsx",
+    custIdCod: "1",
+    custIdNonCod: "2",
+    referenceRows: REF,
+    hubs: [],
+  });
+};
+test("empty cells listed with Excel row number + column; Nilai COD only on COD rows", async () => {
+  const e = (await emptyRun()).report.empty;
+  assert.deepStrictEqual(e.rows[0], { row: 2, resi: "000000000011", columns: ["Penerima", "Alamat Penerima", "Nama Barang", "Nilai COD"] });
+  assert.deepStrictEqual(e.rows[1], { row: 4, resi: "000000000012", columns: ["Nama Barang"] }); // NON-COD: Nilai COD not required
+  assert.deepStrictEqual(e.rows[2], { row: 5, resi: "000000000013", columns: ["Nama Barang"] });
+  assert.strictEqual(e.cells, 6);
+  assert.strictEqual(e.rowsWithEmpty, 3);
+});
+test("empty summary per column, fully empty columns, blank rows", async () => {
+  const e = (await emptyRun()).report.empty;
+  assert.deepStrictEqual(e.byColumn[0], { column: "Nama Barang", count: 3 });
+  assert.deepStrictEqual(e.byColumn.find((c) => c.column === "Penerima"), { column: "Penerima", count: 1 });
+  assert.deepStrictEqual(e.emptyColumns, ["Nama Barang"]);
+  assert.deepStrictEqual(e.blankRows, [3]);
+});
+test("empty-data warnings never change the output structure", async () => {
+  const res = await emptyRun();
+  assert.strictEqual(res.report.rows, 3);
+  const jne = await readBack(res.buffer);
+  assert.deepStrictEqual(jne.getRow(1).values.slice(1), LOADER_JNE_34);
+  assert.strictEqual(jne.rowCount, 4);
+  jne.eachRow((r) => r.eachCell({ includeEmpty: true }, (cell) => assert.strictEqual(cell.font.name, "Titillium Web")));
+});
+test("readTable keeps Excel row numbers (title rows above the header, blank rows)", () => {
+  const { readTable } = require("../server/loader/excel");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["REPORT"], [], ["Resi", "Berat", "Berat Asli"], [1, 1, 1], [], [2, 2, 2]]), "S");
+  const t = readTable(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), "t.xlsx", ["Resi", "Berat", "Berat Asli"]);
+  assert.deepStrictEqual(t.rowNumbers, [4, 5, 6]);
+  assert.deepStrictEqual(t.rows[0], [1, 1, 1]);
+});
+test("pre-check notices: empty data + KOTA PENERIMA fallback (non-blocking)", () => {
+  const { precheckTemplate: pc } = require("../server/loader/precheck");
+  const rows = EMPTY_AOA.slice(1).map((r) => (r.length ? r : HEADERS.map(() => "")));
+  const res = pc({ headers: HEADERS, rows, rowNumbers: [2, 3, 4, 5] }, { lookupKodepos: buildKodeposLookup(REF), lookupKotaPenerima: buildHubLookup(HUBS) });
+  assert.strictEqual(res.ok, true);
+  assert.ok(!res.warnings.some((w) => /EMPTY_CELL/.test(w.code)), "empty data must not block");
+  assert.deepStrictEqual(res.notices.empty.blankRows, [3]);
+  assert.strictEqual(res.notices.empty.rows[0].row, 2);
+  assert.strictEqual(res.notices.kotaPenerima.fallback, 3); // gerai "x" → unknown hub
+  assert.strictEqual(res.notices.kotaPenerima.fallbackGroups[0].reason, "unknown_hub");
+});
+
+// =============================================================================
+const SAMPLE_DATAHUB = path.join(TMP, "DATAHUB.xlsx");
+const MIGRATION_012 = path.join(__dirname, "..", "database", "migrations", "012_loader_hub_kota.sql");
+section("DATAHUB.xlsx → loader_hub_kota (migration 012)");
+test("migration 012 seeds the two requirement labels on hub keys that exist in its seed", () => {
+  const sql = fs.readFileSync(MIGRATION_012, "utf8");
+  assert.ok(/CREATE TABLE IF NOT EXISTS `loader_hub_kota`/.test(sql));
+  assert.ok(!/password|token|credential/i.test(sql.replace(/--.*$/gm, "")), "no credential storage");
+  for (const [hub, label] of [["Sukabumi Sagaranten LM", "Kab. Sukabumi Sgr"], ["Sukabumi Jampang Kulon LM", "Kab. Sukabumi Jp"]]) {
+    assert.ok(sql.includes(`'${hubKey(hub)}', '${hub}'`), `seed row for ${hub}`);
+    assert.ok(sql.includes(`SET \`kota_penerima\` = '${label}'\n WHERE \`hub_key\` = '${hubKey(hub)}'`), `label for ${hub}`);
+  }
+});
+if (fs.existsSync(SAMPLE_DATAHUB)) {
+  test("parse DATAHUB.xlsx: 53 hubs; analytic codes; seed SQL matches migration 012", () => {
+    const d = parseDatahub(fs.readFileSync(SAMPLE_DATAHUB), "DATAHUB.xlsx");
+    assert.strictEqual(d.hubs.length, 53);
+    const sgr = d.hubs.find((h) => h.hub === "Sukabumi Sagaranten LM");
+    assert.deepStrictEqual(sgr, { destCode: "SMI", city: "Sukabumi", hub: "Sukabumi Sagaranten LM", analyticCode: "A1203010", hubType: "LAST MILE" });
+    const migration = fs.readFileSync(MIGRATION_012, "utf8");
+    for (const line of seedSql(d.hubs).split("\n").filter((l) => l.startsWith("  ('"))) {
+      assert.ok(migration.includes(line.replace(/,$/, "").replace(/;$/, "")), `migration is missing: ${line}`);
+    }
+  });
+  if (fs.existsSync(SAMPLE_TEMPLATE)) {
+    test("real template: gerai A1218004 (Subang Sukamelang LM) found in DATAHUB; no label yet → fallback Kab. Subang", async () => {
+      const d = parseDatahub(fs.readFileSync(SAMPLE_DATAHUB), "DATAHUB.xlsx");
+      const hubs = d.hubs.map((h) => ({ hub: h.hub, analytic_code: h.analyticCode, city: h.city, kota_penerima: null, nama_pengirim: null }));
+      const res = await processLoader({
+        templateBuffer: fs.readFileSync(SAMPLE_TEMPLATE),
+        templateName: "t.xlsx",
+        recheckedBuffer: fs.readFileSync(SAMPLE_TEMPLATE),
+        recheckedName: "r.xlsx",
+        custIdCod: "82220300",
+        custIdNonCod: "82220303",
+        referenceRows: parseMasterWorkbook(fs.readFileSync(SAMPLE_MASTER)).rows,
+        hubs,
+      });
+      const kp = res.report.kotaPenerima;
+      assert.deepStrictEqual(kp.fallbackGroups.map((g) => [g.reason, g.hub, g.kotaTujuan, g.count]), [["no_label", "Subang Sukamelang LM", "Kab. Subang", 119]]);
+      hubs.find((h) => h.hub === "Subang Sukamelang LM").kota_penerima = "Kab. Subang Skm";
+      const again = await processLoader({
+        templateBuffer: fs.readFileSync(SAMPLE_TEMPLATE), templateName: "t.xlsx",
+        recheckedBuffer: fs.readFileSync(SAMPLE_TEMPLATE), recheckedName: "r.xlsx",
+        custIdCod: "82220300", custIdNonCod: "82220303",
+        referenceRows: parseMasterWorkbook(fs.readFileSync(SAMPLE_MASTER)).rows, hubs,
+      });
+      assert.deepStrictEqual([again.report.kotaPenerima.mapped, again.report.kotaPenerima.fallback], [119, 0]);
+      const rows = jneRows(await readBack(again.buffer));
+      assert.ok(rows.every((r) => r["KOTA PENERIMA"] === "Kab. Subang Skm" && r["NAMA PENGIRIM"] === "SICEPAT SUBANG"));
+      assert.ok(rows.every((r) => ["Y", "N"].includes(r.COD) && r["RESI JNE"] === null));
+      assert.ok(rows.every((r) => !/[\r\n]/.test(String(r["ALAMAT PENERIMA"] || ""))));
+      assert.deepStrictEqual(res.report.empty.rows, []);
+    });
+  }
 }
 
 (async () => {

@@ -128,7 +128,7 @@ async function main() {
   const resis = tplRows.map((r) => String(r.Resi));
   const baseBody = { template: file(TEMPLATE), custIdCod: "82220300", custIdNonCod: "82220303", sicepatUserId: "sicepat-user-7" };
 
-  // Temporary role/user: loader.view + loader.run but NOT loader.recheck / manage_settings.
+  // Temporary role/user: loader.view + loader.run but NOT loader.recheck / Master Data.
   const roleName = `e2e_loaderrun_${SUFFIX}`;
   const userName = `e2e_loaderrun_${SUFFIX}`;
   const roleId = (await query("INSERT INTO roles (name, description, is_active) VALUES (?, 'e2e', 1)", [roleName])).insertId;
@@ -142,11 +142,12 @@ async function main() {
   const L = await login(userName);
 
   try {
-    await test("API mode needs loader.recheck (403 without it); settings edits need loader.manage_settings", async () => {
+    await test("API mode needs loader.recheck (403 without it); reference edits only in Master Data (403 here)", async () => {
       const r = await request("POST", "/api/loader/jobs", { cookie: L, body: baseBody, headers: tokenHeaders(TOKEN_A) });
       assert.strictEqual(r.status, 403, `${r.status} ${JSON.stringify(r.json)}`);
       assert.strictEqual((await request("POST", `/api/loader/jobs/x/resume`, { cookie: L, headers: tokenHeaders(TOKEN_A) })).status, 403);
-      assert.strictEqual((await request("POST", "/api/loader/settings/kota-wilayah", { cookie: L, body: { kota: "Kab. X", wilayah: "TASIK" } })).status, 403);
+      assert.strictEqual((await request("POST", "/api/loader/settings/kota-wilayah", { cookie: L, body: { kota: "Kab. X", wilayah: "TASIK" } })).status, 404); // removed: read-only
+      assert.strictEqual((await request("POST", "/api/master-data/kota-wilayah", { cookie: L, body: { kota: "Kab. X", wilayah: "TASIK" } })).status, 403);
       assert.strictEqual((await request("GET", "/api/loader/settings/kota-wilayah", { cookie: L })).status, 200);
       assert.strictEqual((await request("POST", "/api/loader/precheck", { cookie: L, body: { template: baseBody.template } })).status, 200);
     });
@@ -216,17 +217,19 @@ async function main() {
       assert.strictEqual(dl.status, 200);
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(dl.buf);
+      // API job output = the same single Loader JNE sheet (34 columns).
+      assert.strictEqual(wb.worksheets.length, 1);
       const ws = wb.worksheets[0];
       const headers = ws.getRow(1).values.slice(1);
-      assert.deepStrictEqual(headers.slice(0, 3), ["Resi", "Berat", "Berat Asli"]);
-      assert.strictEqual(headers[headers.length - 1], "CUST ID");
+      assert.deepStrictEqual(headers, require("../server/loader/jne").JNE_HEADERS);
       let found = 0;
       ws.eachRow((row, n) => {
         if (n === 1) return;
-        const phone = String(row.getCell(headers.indexOf("No HP Penerima") + 1).value);
+        const phone = String(row.getCell(headers.indexOf("NO HANDPHONE PENERIMA") + 1).value);
         if (/^628\d+$/.test(phone)) found++;
-        const cust = row.getCell(headers.length).value;
-        assert.ok(cust === 82220300 || cust === 82220303, "CUST ID numeric");
+        const cust = row.getCell(headers.indexOf("CUSTOMER ID") + 1).value;
+        assert.ok(cust === 82220300 || cust === 82220303, "CUSTOMER ID numeric");
+        assert.strictEqual(row.getCell(headers.indexOf("RESI JNE") + 1).value, null);
         assert.strictEqual(row.getCell(1).font.name, "Titillium Web");
       });
       assert.strictEqual(found, 116);
@@ -297,24 +300,6 @@ async function main() {
       assert.ok(!text.includes("SECRET"), "token stored in loader_jobs");
       // other users cannot see this user's jobs
       assert.strictEqual((await request("GET", `/api/loader/jobs/${jobId}`, { cookie: L })).status, 404);
-    });
-
-    await test("Kota_Tujuan → wilayah mapping: seeded rows, create/update/delete audited, validation", async () => {
-      const g = await request("GET", "/api/loader/settings/kota-wilayah", { cookie: S });
-      const seed = g.json.mappings.filter((m) => m.source === "seed").map((m) => `${m.kota}=${m.wilayah}`);
-      for (const s of ["Kab. Ciamis=TASIK", "Kota Banjar=TASIK", "Kab. Subang=SUBANG"]) assert.ok(seed.includes(s), s);
-      const bad = await request("POST", "/api/loader/settings/kota-wilayah", { cookie: S, body: { kota: "Kab. Test", wilayah: "NOWHERE" } });
-      assert.strictEqual(bad.status, 400);
-      const kota = `Kab. E2E ${SUFFIX}`;
-      const c = await request("POST", "/api/loader/settings/kota-wilayah", { cookie: S, body: { kota, wilayah: "garut" } });
-      assert.strictEqual(c.status, 200, JSON.stringify(c.json));
-      assert.strictEqual(c.json.mapping.wilayah, "GARUT");
-      const u = await request("POST", "/api/loader/settings/kota-wilayah", { cookie: S, body: { kota: kota.toUpperCase(), wilayah: "SUBANG" } });
-      assert.strictEqual(u.json.id, c.json.id, "same kota (normalized) updates the row");
-      const d = await request("DELETE", `/api/loader/settings/kota-wilayah/${c.json.id}`, { cookie: S });
-      assert.strictEqual(d.status, 200);
-      const actions = (await query("SELECT action FROM storage_audit_logs WHERE action LIKE 'loader.kota_mapping_%' ORDER BY id DESC LIMIT 3")).map((r) => r.action);
-      assert.deepStrictEqual(actions, ["loader.kota_mapping_deleted", "loader.kota_mapping_updated", "loader.kota_mapping_created"]);
     });
 
     await test("audit trail: job lifecycle recorded, never the token", async () => {

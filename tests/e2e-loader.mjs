@@ -59,6 +59,7 @@ const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}
 let ws, seq = 0
 const pend = new Map()
 const requests = []
+const downloadEvents = [] // CDP download events (diagnostics)
 const send = (method, params = {}) => { const i = ++seq; ws.send(JSON.stringify({ id: i, method, params })); return new Promise((res, rej) => pend.set(i, { res, rej })) }
 const ev = async (e) => { const r = await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value }
 const waitFor = async (e, l, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await ev(e).catch(() => false)) return; await sleep(100) } throw new Error('timeout: ' + l) }
@@ -84,6 +85,7 @@ async function attach(url) {
     const d = JSON.parse(m.data)
     if (d.id && pend.has(d.id)) { const p = pend.get(d.id); pend.delete(d.id); d.error ? p.rej(new Error(d.error.message)) : p.res(d.result) }
     else if (d.method === 'Network.requestWillBeSent') { const u = new URL(d.params.request.url); if (u.pathname.startsWith('/api/')) requests.push(u.pathname) }
+    else if (/download(WillBegin|Progress)$/.test(d.method || '') && (d.params.state !== 'inProgress')) downloadEvents.push(`${d.method.split('.').pop()} ${d.params.suggestedFilename || ''} ${d.params.state || ''} ${(d.params.url || '').slice(0, 60)}`)
   })
   await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable'); await send('DOM.enable')
   await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true })
@@ -141,13 +143,25 @@ async function main() {
     for (let i = 0; i < 100 && !file; i++) { file = existsSync(downloads) ? (readdirSync(downloads).find((f) => f.endsWith('.xlsx')) || '') : ''; if (!file) await sleep(100) }
     assert(file === 'LOADER - TEMPLATE 3PL - 2026-11-20T124928.943.xlsx', `download missing: ${file}`)
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(readFileSync(join(downloads, file)))
-    const sheet = wb.worksheets[0]
-    assert(sheet.rowCount === 120, `rows ${sheet.rowCount}`)
-    assert(sheet.getRow(1).getCell(7).value === 'KODEPOS', 'KODEPOS column')
-    assert(sheet.getRow(1).getCell(3).value === 'Berat Asli', 'Berat Asli right of Berat')
-    assert(typeof sheet.getRow(2).getCell(14).value === 'number', 'CUST ID numeric')
+    // The download is ONE sheet in the Loader JNE layout (34 columns).
+    assert(wb.worksheets.length === 1, `sheets ${wb.worksheets.map((w) => w.name)}`)
+    const jne = wb.worksheets[0]
+    const headers = jne.getRow(1).values.slice(1)
+    assert(headers.length === 34 && headers[0] === 'TGL DROP' && headers[33] === 'CUSTOMER ID', `headers ${headers.join('|')}`)
+    assert(!headers.includes('Berat Asli') && !headers.includes('CUST ID') && !headers.includes('KODEPOS'), 'old layout columns')
+    assert(jne.rowCount === 120, `rows ${jne.rowCount}`)
+    assert(jne.getRow(1).getCell(5).value === 'RESI JNE' && jne.getRow(2).getCell(5).value === null, 'RESI JNE header kept, cell empty')
+    assert(typeof jne.getRow(2).getCell(34).value === 'number', 'CUSTOMER ID numeric')
+    assert(jne.getRow(2).getCell(33).value === 6282121221355, 'NO HANDPHONE PENGIRIM')
     const txt = await ev('document.body.innerText')
-    assert(txt.includes('No warnings — the file is ready to upload.'), 'expected no warnings')
+    // The sample's gerai (Subang Sukamelang LM) has no KOTA PENERIMA label yet → only the fallback warning.
+    const lbl = await ev(`(async () => (await (await fetch('/api/loader/settings/hubs')).json()).hubs.find((h) => h.hub === 'Subang Sukamelang LM')?.kota_penerima || '')()`)
+    if (lbl) assert(txt.includes('No warnings — the file is ready to upload.'), 'expected no warnings')
+    else {
+      assert(txt.includes('KOTA PENERIMA from Kota_Tujuan — no hub label (119 rows)'), 'KOTA PENERIMA fallback warning')
+      assert((await ev(`document.querySelectorAll('details summary').length`)) === 1, 'only the fallback warning expected')
+    }
+    assert(txt.includes('= Loader JNE layout (34 columns'), 'sheets note')
     assert(/119\s*\/\s*119/.test(txt), 'kodepos / phones counts')
     await shot('result-en')
   })
@@ -156,7 +170,7 @@ async function main() {
     await ev(`[...document.querySelector('aside').querySelectorAll('button[aria-pressed]')].find((b) => b.getAttribute('lang') === 'id').click()`)
     await sleep(300)
     const txt = await ev('document.body.innerText')
-    for (const s of ['Loader Kodepos', 'Proses & unduh', 'Unduh lagi', 'Tidak ada peringatan', 'Referensi kodepos', 'Berat dinormalisasi']) assert(txt.includes(s), `missing "${s}"`)
+    for (const s of ['Loader Kodepos', 'Proses & unduh', 'Unduh lagi', 'Referensi kodepos', 'Gerai / HUB → KOTA PENERIMA', 'Hanya hub tanpa label', 'Berat dinormalisasi']) assert(txt.includes(s), `missing "${s}"`)
     await shot('result-id')
     await ev(`localStorage.setItem('oneops.locale', 'en')`)
   })
@@ -182,20 +196,25 @@ async function main() {
     await waitFor(`document.body.innerText.includes('The active rechecker token')`, 'token ready')
     await setFile(0, TEMPLATE)
     await type('#cust-noncod', '82220303'); await type('#cust-cod', '82220300')
-    const before = existsSync(downloads) ? readdirSync(downloads).length : 0
+    // Count completed downloads via CDP events: Chrome may save a same-named
+    // file over the previous one, so the folder's file count is not reliable.
+    const completed = () => downloadEvents.filter((e) => /^downloadProgress\s+completed/.test(e)).length
+    const before = completed()
     mockCalls.length = 0
     await clickText('Check & start recheck')
     await waitFor(`document.body.innerText.includes('Numbers from SiCepat')`, 'job finished + result', 90000)
     if (!mockCalls.length) throw new Error('backend is not pointed at the mock SiCepat (SICEPAT_BASE_URL)')
     assert(mockCalls.length === 119, `lookups ${mockCalls.length}`)
     assert(mockCalls.every((c) => c.bearer === 'Bearer e2e-bearer'), 'token not forwarded')
-    let n = before
-    for (let i = 0; i < 150 && n === before; i++) { await sleep(100); n = readdirSync(downloads).length }
-    if (n <= before) {
+    for (let i = 0; i < 150 && completed() === before; i++) await sleep(100)
+    if (completed() <= before) {
       await shot('api-no-download')
       const lines = (await ev('document.body.innerText')).split('\n').filter((l) => /download|unduh|failed|gagal|error/i.test(l))
-      throw new Error(`no automatic download (${before} files before) — page: ${lines.slice(0, 6).join(' | ')}`)
+      throw new Error(`no automatic download (events: ${downloadEvents.join(' / ')}) — page: ${lines.slice(0, 6).join(' | ')}`)
     }
+    // The saved file is the new workbook: Result 3PL first, with SiCepat numbers.
+    const saved = new ExcelJS.Workbook(); await saved.xlsx.load(readFileSync(join(downloads, 'LOADER - TEMPLATE 3PL - 2026-11-20T124928.943.xlsx')))
+    assert(saved.worksheets.length === 1 && saved.worksheets[0].getRow(1).values.length - 1 === 34, 'Loader JNE (34 columns)')
     assert(await ev(`document.body.innerText.includes('Loader history')`), 'history card missing')
     await shot('api-done')
   })
