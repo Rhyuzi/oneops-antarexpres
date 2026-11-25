@@ -78,6 +78,11 @@ app.get("/api/status/r2", auth.requireAuth, auth.requireRole("super_admin"), asy
 app.post("/api/auth/login", auth.handleLogin);
 app.post("/api/auth/logout", auth.handleLogout);
 app.get("/api/auth/me", auth.handleMe);
+// Self-service (own account only; no module permission needed): Switch Role
+// re-signs the session with an active role validated against the DB roles.
+app.post("/api/account/switch-role", auth.requireAuth, auth.handleSwitchRole);
+app.put("/api/account/profile", auth.requireAuth, auth.handleUpdateProfile);
+app.post("/api/account/password", auth.requireAuth, auth.handleChangePassword);
 
 // Public account lifecycle (no session): activation + password reset flows.
 // Registered BEFORE any app.use("/api", ...) gate so no auth middleware runs.

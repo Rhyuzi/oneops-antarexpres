@@ -3,6 +3,7 @@ import { watch } from 'vue'
 import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
 import { authStore } from '../stores/auth'
 import { locale, t, type MessageKey } from '../i18n'
+import { landingRouteName } from './landing'
 
 const routes = [
   {
@@ -105,6 +106,13 @@ const routes = [
         meta: { titleKey: 'nav.accountManagement', permission: 'account_management.view' },
       },
       {
+        // Own account: profile, password, active role. Signed-in users only.
+        path: 'account',
+        name: 'account-settings',
+        component: () => import('../views/AccountSettingsView.vue'),
+        meta: { titleKey: 'account.title' },
+      },
+      {
         path: 'audit-trail',
         name: 'audit-trail',
         component: () => import('../views/AuditTrailView.vue'),
@@ -169,20 +177,13 @@ router.beforeEach(async (to) => {
 
   // Super-admin-only routes.
   if (to.meta.superAdminOnly && !auth.isSuperAdmin) {
-    return { name: 'data-warrior' }
+    return { name: landingRouteName() }
   }
 
   // Module permission gate.
   if (to.meta.permission && !auth.can(String(to.meta.permission))) {
     // User lacks this module entirely — land on the first module they CAN use.
-    if (to.meta.superAdminOnly !== true) {
-      if (auth.can('data_warrior.view')) return { name: 'data-warrior' }
-      if (auth.can('number_rechecking.view')) return { name: 'number-rechecking' }
-      if (auth.can('loader.view')) return { name: 'kodepos-loader' }
-      if (auth.can('master_data.view')) return { name: 'master-data-hubs' }
-      if (auth.can('account_management.view')) return { name: 'access-management-accounts' }
-      if (auth.can('audit_trail.view')) return { name: 'audit-trail' }
-    }
+    if (to.meta.superAdminOnly !== true) return { name: landingRouteName() }
     return { name: 'no-access' }
   }
   return true

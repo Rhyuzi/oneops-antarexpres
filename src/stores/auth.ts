@@ -6,8 +6,18 @@ export interface AuthUser {
   username: string
   fullName: string
   email?: string | null
+  /** Roles in effect for this session (= [activeRole] after Switch Role). */
   roles: string[]
+  /** Every role assigned to the account (Switch Role choices). */
+  assignedRoles?: string[]
+  /** Active role, or null = all assigned roles combined. */
+  activeRole?: string | null
   permissions: string[] | null
+}
+
+export interface ProfileInput {
+  full_name: string
+  email: string
 }
 
 interface AuthState {
@@ -99,6 +109,33 @@ export const authStore = {
     } finally {
       state.loading = false
     }
+  },
+  /** Assigned roles (falls back to the effective roles for old servers). */
+  get assignedRoles(): string[] {
+    return state.user?.assignedRoles ?? state.user?.roles ?? []
+  },
+  get activeRole(): string | null {
+    return state.user?.activeRole ?? null
+  },
+  /**
+   * Switch Role: the server validates the role against the account's
+   * assigned roles, re-signs the session cookie and returns the new
+   * effective roles + permissions (menus and route guards follow them).
+   * role null = all assigned roles. Errors propagate to the caller.
+   */
+  async switchRole(role: string | null): Promise<void> {
+    const resp = await axios.post<{ user: AuthUser }>('/api/account/switch-role', { role })
+    state.user = resp.data.user
+  },
+  /** Own name / email. Returns the server message (localized by the view). */
+  async updateProfile(input: ProfileInput): Promise<{ message: string; changed: string[] }> {
+    const resp = await axios.put<{ user: AuthUser; message: string; changed: string[] }>('/api/account/profile', input)
+    state.user = resp.data.user
+    return { message: resp.data.message, changed: resp.data.changed }
+  },
+  async changePassword(currentPassword: string, newPassword: string, confirmPassword: string): Promise<string> {
+    const resp = await axios.post<{ message: string }>('/api/account/password', { currentPassword, newPassword, confirmPassword })
+    return resp.data.message
   },
   async logout(): Promise<void> {
     try {

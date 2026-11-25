@@ -16,16 +16,20 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  UserCog,
   X,
 } from 'lucide-vue-next'
 import { authStore } from '../stores/auth'
 import LoadingButton from '../components/LoadingButton.vue'
+import AccountMenu from '../components/account/AccountMenu.vue'
+import { roleName, useRoleSwitch } from '../composables/useRoleSwitch'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 import { t, type MessageKey } from '../i18n'
 import { useAsyncAction } from '../composables/useAsyncAction'
 
 const route = useRoute()
 const router = useRouter()
+const roleSwitch = useRoleSwitch()
 
 // Sidebar state: desktop collapse + mobile off-canvas.
 const collapsed = ref(false)
@@ -99,7 +103,8 @@ const navGroups = computed(() => {
     groups.push({ label: 'nav.accessManagement', items: accessItems })
   }
 
-  return groups
+  // A group whose items are all hidden for the (active) role is not shown.
+  return groups.filter((g) => g.items.some(itemVisible))
 })
 
 function itemVisible(item: NavItem): boolean {
@@ -189,22 +194,11 @@ const logoutAction = useAsyncAction(async (): Promise<void> => {
       <!-- User + collapse: anchored at the bottom, outside the nav scroll area -->
       <div class="shrink-0 border-t border-slate-200 bg-white p-3">
         <div
-          class="flex items-center gap-3 rounded-xl px-2 py-2"
+          class="flex items-center gap-1"
           :class="{ 'justify-center': collapsed && isDesktop }"
         >
-          <div
-            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-sm font-bold text-indigo-700"
-          >
-            {{ authStore.initials || '?' }}
-          </div>
-          <div v-if="!(collapsed && isDesktop)" class="min-w-0 flex-1">
-            <p class="truncate text-sm font-semibold text-slate-800">
-              {{ authStore.displayName }}
-            </p>
-            <p class="truncate text-xs capitalize text-slate-400">
-              {{ authStore.state.user?.roles.join(', ').replace(/_/g, ' ') || '' }}
-            </p>
-          </div>
+          <!-- Account menu: Account Settings + Switch Role -->
+          <AccountMenu :compact="collapsed && isDesktop" />
           <LoadingButton
             v-if="!(collapsed && isDesktop)"
             class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:cursor-not-allowed"
@@ -256,7 +250,24 @@ const logoutAction = useAsyncAction(async (): Promise<void> => {
       </header>
 
       <main class="min-w-0 flex-1 p-4 sm:p-6">
-        <router-view />
+        <div
+          v-if="roleSwitch.state.notice !== undefined"
+          class="mb-4 flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm text-indigo-800"
+          role="status"
+        >
+          <UserCog :size="16" class="shrink-0" />
+          <span class="flex-1">
+            {{ roleSwitch.state.notice ? t('account.nowActingAs', { role: roleName(roleSwitch.state.notice) }) : t('account.nowAllRoles') }}
+          </span>
+          <button type="button" class="rounded p-1 hover:bg-indigo-100" :aria-label="t('common.close')" @click="roleSwitch.dismissNotice()">
+            <X :size="14" />
+          </button>
+        </div>
+        <!-- Re-mounted after Switch Role so data loaded with the previous
+             role's rights is fetched again with the new ones. -->
+        <router-view v-slot="{ Component }">
+          <component :is="Component" :key="roleSwitch.state.sessionKey" />
+        </router-view>
       </main>
     </div>
   </div>

@@ -5,7 +5,9 @@
  *
  * - POST /api/auth/login    → verifies bcrypt hash from `users`, issues an
  *   HMAC-SHA256 signed session token in an HttpOnly cookie.
- * - Session payload: { uid, un, exp } (user id, username, expiry).
+ * - Session payload: { uid, un, ar?, iat, exp } (user id, username, active
+ *   role, issue time, expiry). `ar` (Switch Role) is honoured only while that
+ *   role is still assigned in the DB — see accountSelf.js.
  * - Every protected route uses requireAuth middleware; roles are attached
  *   to req.user.roles (array of role names).
  * - requireRole('super_admin') gates admin-only endpoints.
@@ -64,10 +66,14 @@ function signSession(payload, opts) {
   const now = Number.isFinite(dbNow) && dbNow > 0 ? dbNow : Math.floor(Date.now() / 1000);
   const cutoff = Number(opts && opts.notBefore);
   const iat = Number.isFinite(cutoff) && cutoff >= now ? cutoff + 1 : now;
+  // opts.expiresAt: keep an existing session's expiry (Switch Role must not
+  // extend a session); never later than a fresh TTL.
+  const keepExp = Number(opts && opts.expiresAt);
+  const exp = Number.isFinite(keepExp) && keepExp > iat ? Math.min(keepExp, iat + TTL_SECONDS) : iat + TTL_SECONDS;
   const body = {
     ...payload,
     iat,
-    exp: iat + TTL_SECONDS,
+    exp,
   };
   const data = b64url(JSON.stringify(body));
   const sig = crypto
@@ -129,12 +135,12 @@ function parseCookies(header) {
   return out;
 }
 
-function sessionCookie(token) {
+function sessionCookie(token, maxAge = TTL_SECONDS) {
   const parts = [
     `${COOKIE_NAME}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
-    `Max-Age=${TTL_SECONDS}`,
+    `Max-Age=${Math.max(1, Math.floor(maxAge))}`,
     "SameSite=Lax",
   ];
   if (config.session.secureCookies) parts.push("Secure");
@@ -190,10 +196,12 @@ function loginEnabled() {
 /** Attaches req.user (with roles + module permission set) when a valid session cookie is present. */
 async function attachUser(req, res, next) {
   req.user = null;
+  req.session = null;
   try {
     const cookies = parseCookies(req.headers.cookie);
     const payload = cookies[COOKIE_NAME] ? verifySession(cookies[COOKIE_NAME]) : null;
     if (payload && payload.uid) {
+      req.session = payload;
       req.user = await loadUserWithRoles(payload.uid);
       // Session invalidation gate: sessions issued before token_valid_after
       // (set on activation, password change/reset and logout) are dead even
@@ -213,6 +221,10 @@ async function attachUser(req, res, next) {
         }
       }
       if (req.user) {
+        // Switch Role: assigned roles come fresh from the DB on every request;
+        // the token's active role narrows them only while it is still
+        // assigned. Everything downstream reads req.user.roles = EFFECTIVE roles.
+        applyActiveRole(req.user, payload.ar);
         // Layer-2 authorization data (module permissions). Missing tables
         // (migration 007 not imported) → keep req.user but no permissions;
         // protected routes then 503 rather than fail open.
@@ -231,6 +243,15 @@ async function attachUser(req, res, next) {
     req.dbError = err;
   }
   next();
+}
+
+/** req.user.roles → effective roles; keeps the assigned list + active role. */
+function applyActiveRole(user, claimed) {
+  const assigned = user.assignedRoles || user.roles || [];
+  user.assignedRoles = assigned;
+  user.activeRole = sanitizeActiveRole(assigned, claimed);
+  user.roles = effectiveRoles(assigned, user.activeRole);
+  return user;
 }
 
 /** Blocks the request unless req.user is set. */
@@ -382,15 +403,13 @@ async function handleLogin(req, res) {
   });
 
   res.setHeader("Set-Cookie", sessionCookie(token));
+  // A new sign-in always starts with all assigned roles (no active role).
+  if (full) applyActiveRole(full, null);
   return res.json({
     ok: true,
-    user: {
-      id: user.id,
-      username: user.username,
-      fullName: user.full_name,
-      roles: full ? full.roles : [],
-      permissions,
-    },
+    user: full
+      ? userPayload(full, permissions)
+      : { id: user.id, username: user.username, fullName: user.full_name, email: null, roles: [], assignedRoles: [], activeRole: null, permissions },
   });
 }
 
@@ -422,17 +441,198 @@ async function handleLogout(req, res) {
 
 async function handleMe(req, res) {
   if (!req.user) return res.json({ ok: true, user: null });
-  return res.json({
-    ok: true,
-    user: {
-      id: req.user.id,
-      username: req.user.username,
-      fullName: req.user.full_name,
-      email: req.user.email,
-      roles: req.user.roles,
-      permissions: req.user.permissions ? [...req.user.permissions] : null,
-    },
+  return res.json({ ok: true, user: userPayload(req.user, req.user.permissions) });
+}
+
+// ---------------------------------------------------------------------------
+// Self-service: Switch Role + Change Account Information (requireAuth routes)
+// ---------------------------------------------------------------------------
+
+/** DB clock + revocation cutoff (epoch seconds) for signing a session. */
+async function sessionClock(userId) {
+  const rows = await query(
+    "SELECT UNIX_TIMESTAMP(token_valid_after) AS cutoff, UNIX_TIMESTAMP() AS now FROM users WHERE id = ? LIMIT 1",
+    [userId]
+  );
+  return rows[0] || {};
+}
+
+/** Re-issues this browser's session cookie (same user, new claims). */
+async function reissueSession(req, res, { activeRole, keepExpiry }) {
+  const clock = await sessionClock(req.user.id);
+  const payload = { uid: req.user.id, un: req.user.username };
+  if (activeRole) payload.ar = activeRole;
+  const expiresAt = keepExpiry && req.session ? req.session.exp : undefined;
+  const token = signSession(payload, { notBefore: clock.cutoff, now: clock.now, expiresAt });
+  if (!token) return false;
+  const exp = verifySession(token).exp;
+  const now = Number(clock.now) || Math.floor(Date.now() / 1000);
+  res.setHeader("Set-Cookie", sessionCookie(token, exp - now));
+  return true;
+}
+
+/** POST /api/account/switch-role { role: string | null } */
+async function handleSwitchRole(req, res) {
+  const { logAudit } = require("./audit");
+  const body = req.body || {};
+  const r = resolveSwitch(req.user.assignedRoles || req.user.roles, body.role);
+  if (!r.ok) {
+    if (r.status === 403) {
+      // Attempt to use a role the account does not hold: audited.
+      await logAudit({
+        req,
+        action: "user.role_switch_denied",
+        entityType: "user",
+        entityId: req.user.id,
+        result: "failure",
+        metadata: { username: req.user.username, requested: String(body.role).slice(0, 50) },
+      });
+    }
+    return res.status(r.status).json({ ok: false, message: r.message });
+  }
+
+  const before = { active_role: req.user.activeRole, roles: req.user.roles };
+  try {
+    if (!(await reissueSession(req, res, { activeRole: r.activeRole, keepExpiry: true }))) {
+      return res.status(503).json({ ok: false, message: "Session signing unavailable." });
+    }
+  } catch (err) {
+    console.error("[auth] switch role failed:", err.dbMessage || err.message);
+    return res.status(503).json({ ok: false, message: "Database unavailable." });
+  }
+
+  applyActiveRole(req.user, r.activeRole);
+  let permissions = null;
+  try {
+    const { loadUserPermissions } = require("./modulePermissions");
+    permissions = await loadUserPermissions(req.user.roles);
+  } catch (_) {
+    permissions = null;
+  }
+  const after = { active_role: req.user.activeRole, roles: req.user.roles };
+
+  if (before.active_role !== after.active_role) {
+    await logAudit({
+      req,
+      // Actor snapshot: the account with every assigned role (who switched).
+      actor: { username: req.user.username, full_name: req.user.full_name, roles: req.user.assignedRoles },
+      action: "user.role_switched",
+      entityType: "user",
+      entityId: req.user.id,
+      before,
+      after,
+      metadata: { username: req.user.username, from: before.active_role || "all", to: after.active_role || "all" },
+    });
+  }
+  return res.json({ ok: true, user: userPayload(req.user, permissions) });
+}
+
+/** PUT /api/account/profile { full_name?, email? } — own account only. */
+async function handleUpdateProfile(req, res) {
+  const { logAudit } = require("./audit");
+  try {
+    const existing = (await query("SELECT id, username, full_name, email FROM users WHERE id = ? LIMIT 1", [req.user.id]))[0];
+    if (!existing) return res.status(404).json({ ok: false, message: "Account not found." });
+
+    const v = validateProfileUpdate(req.body, existing);
+    if (!v.ok) {
+      if (v.fields) {
+        // Someone tried to change roles / status / … through the profile form.
+        await logAudit({
+          req,
+          action: "account.self_update_rejected",
+          entityType: "user",
+          entityId: req.user.id,
+          result: "failure",
+          metadata: { username: existing.username, fields: v.fields.slice(0, 20).map((f) => String(f).slice(0, 40)) },
+        });
+      }
+      return res.status(v.status).json({ ok: false, message: v.message, fields: v.fields });
+    }
+
+    if (v.updates.email) {
+      const dupe = await query("SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1", [v.updates.email, req.user.id]);
+      if (dupe.length) return res.status(409).json({ ok: false, message: "That email address is already registered." });
+    }
+
+    const keys = Object.keys(v.updates); // whitelisted by validateProfileUpdate
+    if (keys.length) {
+      await query(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`, [...keys.map((k) => v.updates[k]), req.user.id]);
+      Object.assign(req.user, v.updates);
+      await logAudit({
+        req,
+        action: "account.self_profile_updated",
+        entityType: "user",
+        entityId: req.user.id,
+        before: v.before,
+        after: v.after,
+        metadata: { username: existing.username, fields: keys },
+      });
+    }
+    return res.json({
+      ok: true,
+      changed: keys,
+      message: "Account information updated.",
+      user: userPayload(req.user, req.user.permissions),
+    });
+  } catch (err) {
+    if (err && err.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ ok: false, message: "That email address is already registered." });
+    }
+    console.error("[auth] profile update failed:", err.dbMessage || err.message);
+    return res.status(503).json({ ok: false, message: "Database unavailable." });
+  }
+}
+
+/**
+ * POST /api/account/password { currentPassword, newPassword, confirmPassword }
+ * Verifies the current password, applies the policy, revokes every other
+ * session and keeps this browser signed in (fresh cookie, same active role).
+ */
+async function handleChangePassword(req, res) {
+  const { logAudit } = require("./audit");
+  if (!rateLimit(`pwchange:${req.user.id}`, 10, 15 * 60 * 1000)) {
+    return res.status(429).json({ ok: false, message: "Too many requests. Try again later." });
+  }
+  const input = validatePasswordChangeInput(req.body);
+  if (!input.ok) return res.status(input.status).json({ ok: false, message: input.message });
+  const { currentPassword, newPassword } = req.body;
+  const policy = validatePasswordPolicy(newPassword);
+  if (!policy.valid) return res.status(400).json({ ok: false, message: policy.message });
+
+  try {
+    const row = (await query("SELECT password_hash FROM users WHERE id = ? LIMIT 1", [req.user.id]))[0];
+    const good = row ? await bcrypt.compare(String(currentPassword), row.password_hash) : false;
+    if (!good) {
+      await logAudit({
+        req,
+        action: "account.password_change_failed",
+        entityType: "user",
+        entityId: req.user.id,
+        result: "failure",
+        metadata: { username: req.user.username, reason: "wrong_current_password" },
+      });
+      // 400 (not 401): a typo must not sign the user out.
+      return res.status(400).json({ ok: false, message: "Current password is incorrect." });
+    }
+    const hash = await bcrypt.hash(String(newPassword), 10);
+    await query(`UPDATE users SET password_hash = ?, ${REVOKE_SESSIONS_SET} WHERE id = ?`, [hash, req.user.id]);
+    await revokeTokens(req.user.id, TOKEN_TYPES.PASSWORD_RESET);
+    await reissueSession(req, res, { activeRole: req.user.activeRole, keepExpiry: false });
+  } catch (err) {
+    console.error("[auth] password change failed:", err.dbMessage || err.message);
+    return res.status(503).json({ ok: false, message: "Service unavailable." });
+  }
+
+  await logAudit({
+    req,
+    action: "account.password_changed",
+    entityType: "user",
+    entityId: req.user.id,
+    after: { password: "(changed)", other_sessions: "revoked" },
+    metadata: { username: req.user.username, via: "account_settings" },
   });
+  return res.json({ ok: true, message: "Password changed. Your other sessions have been signed out." });
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +642,14 @@ async function handleMe(req, res) {
 
 const { TYPES: TOKEN_TYPES, consumeToken, issueToken, revokeTokens, validatePasswordPolicy } =
   require("./tokenService");
+const {
+  effectiveRoles,
+  sanitizeActiveRole,
+  resolveSwitch,
+  validateProfileUpdate,
+  validatePasswordChangeInput,
+  userPayload,
+} = require("./accountSelf");
 
 // In-memory rate limiter for anonymous endpoints (per IP+intent).
 const rateBuckets = new Map();
@@ -732,6 +940,10 @@ module.exports = {
   handleLogin,
   handleLogout,
   handleMe,
+  handleSwitchRole,
+  handleUpdateProfile,
+  handleChangePassword,
+  applyActiveRole,
   handleActivateAccount,
   handleForgotPassword,
   handleResetPassword,

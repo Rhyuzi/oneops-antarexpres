@@ -75,6 +75,8 @@ const MODULE_RULES = [
   ["auth.*", "authentication"],
   ["account.activated", "authentication"],
   ["account.password_changed", "authentication"],
+  ["account.password_change_failed", "authentication"],
+  ["user.role_switch*", "authentication"], // user.role_switched, user.role_switch_denied
   ["account.*", "account_management"],
   ["role.*", "access_management"],
   ["user.roles.*", "access_management"],
@@ -225,13 +227,19 @@ function describe(action, d, entityId) {
   const x = d || {};
   const who = x.username ? `@${x.username}` : entityId ? `#${entityId}` : "";
   const list = (v) => (Array.isArray(v) && v.length ? v.join(", ") : "none");
+  const roleLabel = (v) => (!v || v === "all" ? "all roles" : String(v));
   switch (action) {
     case "user.login": return "Signed in";
     case "user.login_failed": return `Failed sign-in${x.identifier ? ` for "${x.identifier}"` : ""}${x.reason ? ` (${String(x.reason).replace(/_/g, " ")})` : ""}`;
     case "user.logout": return "Signed out";
     case "account.activated": return "Activated account via invitation link";
     case "auth.activation_failed": return `Account activation failed (${String(x.reason || "invalid link").replace(/_/g, " ")})`;
-    case "account.password_changed": return "Changed password via reset link";
+    case "account.password_changed": return x.via === "account_settings" ? "Changed own password in account settings" : "Changed password via reset link";
+    case "account.password_change_failed": return `Password change failed (${String(x.reason || "error").replace(/_/g, " ")})`;
+    case "user.role_switched": return `Switched active role from ${roleLabel(x.from)} to ${roleLabel(x.to)}`;
+    case "user.role_switch_denied": return `Refused switch to unassigned role "${x.requested || "?"}"`;
+    case "account.self_profile_updated": return `Updated own account information${Array.isArray(x.fields) && x.fields.length ? ` (${x.fields.join(", ")})` : ""}`;
+    case "account.self_update_rejected": return `Refused change of protected fields${Array.isArray(x.fields) && x.fields.length ? ` (${x.fields.join(", ")})` : ""}`;
     case "auth.password_reset_requested": return "Requested a password reset link";
     case "auth.password_reset_failed": return `Password reset failed (${String(x.reason || "invalid link").replace(/_/g, " ")})`;
     case "account.password_reset_requested": return `Sent password reset email to ${who}`.trim();
