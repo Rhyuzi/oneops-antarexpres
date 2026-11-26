@@ -82,7 +82,7 @@ async function insertJobRow(job) {
           cust_id_cod, cust_id_non_cod, total_rows, total_awb, started_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [job.publicId, job.userId, job.mode, job.status, job.templateName.slice(0, 200), job.recheckedName || null,
-        job.wilayah || null, job.ids.cod, job.ids.nonCod, job.totalRows, job.awbs ? job.awbs.length : 0]
+        (job.wilayahLabel || job.wilayah || "").slice(0, 100) || null, job.ids.cod, job.ids.nonCod, job.totalRows, job.awbs ? job.awbs.length : 0]
     );
   } catch (err) {
     historyUnavailable(err);
@@ -159,6 +159,10 @@ function summarize(report, recheck) {
     emptyCells: report.empty ? report.empty.cells : 0,
     emptyRows: report.empty ? report.empty.rowsWithEmpty : 0,
     emptyColumns: report.empty ? report.empty.emptyColumns : [],
+    // Wilayah / kota of the form and the sender columns (no customer data).
+    sender: report.sender || null,
+    duplicateResi: report.duplicateResi ? report.duplicateResi.groups : 0,
+    duplicateResiRows: report.duplicateResi ? report.duplicateResi.rows : 0,
     kotaPenerimaMapped: report.kotaPenerima ? report.kotaPenerima.mapped : 0,
     kotaPenerimaFallback: report.kotaPenerima ? report.kotaPenerima.fallback : 0,
     kotaPenerimaFallbackHubs: report.kotaPenerima
@@ -213,7 +217,7 @@ function audit(job, action, extra = {}, result = "success") {
  * Starts an API-mode job (returns immediately; work continues in background).
  * Caller has validated input, run the pre-check and checked permissions.
  */
-async function startApiJob({ userId, table, templateName, ids, wilayah, reference, kotaMap, hubs = [], awbs, credentials, precheck, convertWeight = true, client = lookupAwb, queueOptions }) {
+async function startApiJob({ userId, table, templateName, ids, wilayah, wilayahLabel = null, sender = null, locale = "id", reference, kotaMap, hubs = [], awbs, credentials, precheck, convertWeight = true, client = lookupAwb, queueOptions }) {
   if (hasActiveJob(userId)) {
     const e = new Error("You already have a loader recheck job running. Wait for it to finish or cancel it.");
     e.status = 409;
@@ -230,6 +234,9 @@ async function startApiJob({ userId, table, templateName, ids, wilayah, referenc
     recheckedName: null,
     ids,
     wilayah,
+    wilayahLabel,
+    sender,
+    locale,
     reference,
     kotaMap,
     hubs,
@@ -320,6 +327,8 @@ async function runJob(job) {
       kotaMap: job.kotaMap,
       hubs: job.hubs,
       convertWeight: job.convertWeight,
+      sender: job.sender,
+      locale: job.locale,
     });
     job.download = storeResult(job.userId, out.buffer, out.filename);
     job.report = { ...out.report, recheck };
@@ -379,9 +388,9 @@ async function cancelJob(publicId, userId) {
 }
 
 /** File mode: one history row for a finished run. */
-async function recordFileJob({ userId, templateName, recheckedName, ids, wilayah, report, download }) {
+async function recordFileJob({ userId, templateName, recheckedName, ids, wilayah, wilayahLabel = null, report, download }) {
   const job = {
-    publicId: newId(), userId, mode: "file", status: "done", templateName, recheckedName, ids, wilayah,
+    publicId: newId(), userId, mode: "file", status: "done", templateName, recheckedName, ids, wilayah, wilayahLabel,
     totalRows: report.rows, awbs: null, results: null, download, summary: summarize(report, null), error: null,
   };
   await insertJobRow(job);
@@ -401,7 +410,7 @@ function liveView(job) {
     status: job.status,
     templateName: job.templateName,
     rechecked: job.recheckedName,
-    wilayah: job.wilayah,
+    wilayah: job.wilayahLabel || job.wilayah,
     totalRows: job.totalRows,
     progress: c,
     startedAt: job.startedAt,

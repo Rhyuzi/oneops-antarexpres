@@ -43,8 +43,74 @@ export interface LoaderReport {
   kotaPenerima?: KotaPenerimaReport
   sheets?: string[]
   senderPhone?: string
+  /** Wilayah / kota picked in the form and the sender columns they produced. */
+  sender?: LoaderSender | null
+  duplicateResi?: DuplicateResiReport
+  resiIssues?: ResiIssuesReport
+  rechecked?: { mode: string; name: string; duplicateResi?: DuplicateResiReport } | null
   recheck?: { mode: 'api'; total: number; success: number; failed: number; byCode: Record<string, number>; failures: RecheckFailure[] }
 }
+/** Resi double: every resi seen more than once, with its Excel rows (server/loader/duplicates.js). */
+export interface DuplicateResiReport {
+  groups: number
+  rows: number
+  items: Array<{ resi: string; count: number; rows: number[] }>
+  /** Rows painted red in the downloaded file. */
+  highlighted?: number
+}
+
+/** Why a resi is red (server/loader/resiIssues.js); texts: src/lib/resiIssues.ts. */
+export type ResiIssue = { type: 'duplicate'; rows: number[] } | { type: 'invalid'; chars: string[] }
+export interface ResiIssueRow { row: number; resi: string; issues: ResiIssue[] }
+export interface ResiIssueSummary {
+  total: number
+  valid: number
+  withIssues: number
+  duplicateGroups: number
+  duplicateRows: number
+  invalidRows: number
+}
+/** Rows WITH an issue (loader pre-check / 409 confirmation / result). */
+export interface ResiIssuesReport { summary: ResiIssueSummary; rows: ResiIssueRow[]; truncated: boolean }
+/** Grouped duplicates (rechecked file) → one row per occurrence. */
+export function duplicatesAsIssueRows(d: DuplicateResiReport): ResiIssueRow[] {
+  return d.items
+    .flatMap((g) => g.rows.map((row) => ({ row, resi: g.resi, issues: [{ type: 'duplicate', rows: g.rows } as ResiIssue] })))
+    .sort((a, b) => a.row - b.row)
+}
+
+export interface LoaderSender { wilayah: string; kota: string; kotaPengirim: string; namaPengirim: string }
+
+/** Wilayah master (migration 014) as served by GET /api/loader/wilayah-options. */
+/** kotaPengirim: KOTA PENGIRIM already resolved by the server for this kota ("" = empty). */
+export interface WilayahKotaOption { id: number; kota: string; aliases: string[]; kotaPengirim: string }
+export interface WilayahOption {
+  id: number
+  name: string
+  kodeposWilayah: string | null
+  namaPengirimBase: string
+  custIdNonCod: string | null
+  custIdCod: string | null
+  isTasikmalaya: boolean
+  kota: WilayahKotaOption[]
+}
+export async function getWilayahOptions(): Promise<WilayahOption[]> {
+  return (await axios.get('/api/loader/wilayah-options')).data.wilayah
+}
+
+/**
+ * Same rule as the server (server/loader/wilayah.js senderFor) — preview only;
+ * the file is always built from the DB values on the server.
+ */
+export function senderPreview(w: WilayahOption, kota: WilayahKotaOption | null): { kotaPengirim: string; namaPengirim: string } {
+  const squash = (s: string) => s.replace(/\s+/g, ' ').trim()
+  return {
+    // Per-kota value from the server (kota_pengirim, else the wilayah rule).
+    kotaPengirim: kota ? kota.kotaPengirim : w.isTasikmalaya ? '' : squash(w.name),
+    namaPengirim: squash(`${w.namaPengirimBase} ${kota ? kota.kota : ''}`),
+  }
+}
+
 export interface DownloadInfo { id: string; filename: string; expiresAt: string }
 export interface PrecheckWarning { code: string; count: number; items: Array<Record<string, unknown>> }
 export interface Precheck {
@@ -53,6 +119,7 @@ export interface Precheck {
   warnings: PrecheckWarning[]
   counts: { rows: number; uniqueResi: number; cod: number; nonCod: number }
   notices?: { empty: EmptyReport | null; kotaPenerima: KotaPenerimaReport | null }
+  resiIssues?: ResiIssuesReport
 }
 /** Gerai / HUB master row (loader_hub_kota). */
 export interface HubMapping {
@@ -112,10 +179,12 @@ function tokenRequest(): { headers: Record<string, string>; sicepatUserId: strin
 
 export async function startApiJob(body: {
   template: FilePayload
-  custIdCod: string
-  custIdNonCod: string
-  wilayah?: string
+  /** Master Data ids — the server resolves Cust IDs / sender columns from them. */
+  wilayahId: number
+  kotaId: number
   acknowledgeWarnings?: boolean
+  /** Language of the issue notes written into the file. */
+  locale?: string
   convertWeightFromActual?: boolean
 }): Promise<LoaderJob> {
   const tok = tokenRequest()
@@ -141,7 +210,7 @@ export async function listJobs(all = false): Promise<LoaderJob[]> {
   return (await axios.get('/api/loader/jobs', { params: all ? { scope: 'all' } : {} })).data.jobs
 }
 
-export async function precheck(body: { template: FilePayload; wilayah?: string }): Promise<Precheck> {
+export async function precheck(body: { template: FilePayload; wilayahId: number }): Promise<Precheck> {
   return (await axios.post('/api/loader/precheck', body)).data.precheck
 }
 

@@ -21,31 +21,37 @@ import LoadingButton from '../components/LoadingButton.vue'
 import LoaderJobHistory from '../components/loader/LoaderJobHistory.vue'
 import KotaWilayahSettings from '../components/loader/KotaWilayahSettings.vue'
 import HubKotaSettings from '../components/loader/HubKotaSettings.vue'
+import WilayahMasterCard from '../components/loader/WilayahMasterCard.vue'
+import ResiIssuesPanel from '../components/loader/ResiIssuesPanel.vue'
 import { useAsyncAction } from '../composables/useAsyncAction'
 import { authStore } from '../stores/auth'
-import { formatBytes, formatDateTime, formatNumber, t, type MessageKey } from '../i18n'
+import { formatBytes, formatDateTime, formatNumber, locale, t, type MessageKey } from '../i18n'
 import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
 import {
   cancelJob,
   downloadResult,
   fileToPayload,
   getJob,
+  getWilayahOptions,
   hasRecheckerToken,
+  senderPreview,
   resumeJob,
   startApiJob,
   type DownloadInfo,
+  duplicatesAsIssueRows,
+  type ResiIssuesReport,
   type EmptyReport,
   type KotaFallbackReason,
   type KotaPenerimaReport,
   type LoaderJob,
   type LoaderReport,
   type Precheck,
+  type WilayahOption,
 } from '../lib/loaderApi'
 
 interface WilayahSummary { wilayah: string | null; count: number }
 
 const MAX_BYTES = 10 * 1024 * 1024
-const CUST_ID_RE = /^\d{1,15}$/ // CUST ID is exported as a number
 const POLL_MS = 1500
 
 const canRun = computed(() => authStore.can('loader.run'))
@@ -59,7 +65,35 @@ type Mode = 'file' | 'api'
 const mode = ref<Mode>('file')
 const templateFile = ref<File | null>(null)
 const recheckedFile = ref<File | null>(null)
-const wilayah = ref('')
+
+// Wilayah + kota from Master Data (migration 014). Cust IDs are filled from the
+// selected wilayah and read-only; the server resolves them again from the DB.
+const wilayahOptions = ref<WilayahOption[]>([])
+const wilayahLoadError = ref('')
+const wilayahId = ref('')
+const kotaId = ref('')
+const selectedWilayah = computed(() => wilayahOptions.value.find((w) => String(w.id) === wilayahId.value) ?? null)
+/** Kota of the selected wilayah only. */
+const kotaOptions = computed(() => selectedWilayah.value?.kota ?? [])
+const selectedKota = computed(() => kotaOptions.value.find((k) => String(k.id) === kotaId.value) ?? null)
+const custIdNonCod = computed(() => selectedWilayah.value?.custIdNonCod ?? '')
+const custIdCod = computed(() => selectedWilayah.value?.custIdCod ?? '')
+const sender = computed(() => (selectedWilayah.value ? senderPreview(selectedWilayah.value, selectedKota.value) : null))
+watch(wilayahId, () => {
+  // A kota of another wilayah is never kept; a single kota is picked automatically.
+  if (!kotaOptions.value.some((k) => String(k.id) === kotaId.value)) kotaId.value = ''
+  if (kotaOptions.value.length === 1) kotaId.value = String(kotaOptions.value[0].id)
+  formError.value = ''
+})
+
+async function loadWilayahOptions(): Promise<void> {
+  wilayahLoadError.value = ''
+  try {
+    wilayahOptions.value = await getWilayahOptions()
+  } catch (err) {
+    wilayahLoadError.value = apiErrorMessage(err, 'loader.wilayahLoadFailed')
+  }
+}
 
 // Rule 4 switch: convert Berat from Berat Asli (default ON). Remembered per
 // browser only as a convenience — the server default is ON as well.
@@ -79,8 +113,6 @@ watch(convertWeight, (on) => {
     /* storage unavailable: keep the in-memory value */
   }
 })
-const custIdNonCod = ref('')
-const custIdCod = ref('')
 const formError = ref<MessageKey | ''>('')
 const serverError = ref('')
 const tokenReady = ref(hasRecheckerToken())
@@ -114,11 +146,9 @@ function validate(): MessageKey | '' {
   if (!templateFile.value || (mode.value === 'file' && !recheckedFile.value)) {
     return mode.value === 'file' ? 'loader.filesRequired' : 'loader.templateRequired'
   }
-  const cod = custIdCod.value.trim()
-  const nonCod = custIdNonCod.value.trim()
-  if (!cod || !nonCod) return 'loader.custIdRequired'
-  if (!CUST_ID_RE.test(cod) || !CUST_ID_RE.test(nonCod)) return 'loader.custIdInvalid'
-  if (cod === nonCod) return 'loader.custIdSame'
+  if (!selectedWilayah.value) return 'loader.wilayahRequired'
+  if (!selectedKota.value) return 'loader.kotaRequired'
+  if (!custIdCod.value || !custIdNonCod.value) return 'loader.custIdMissing'
   if (mode.value === 'api' && !hasRecheckerToken()) return 'loader.tokenMissing'
   return ''
 }
@@ -140,7 +170,11 @@ const downloadAction = useAsyncAction(async (info?: DownloadInfo): Promise<void>
 })
 
 // --- file mode ---------------------------------------------------------------------
-const processAction = useAsyncAction(async (): Promise<void> => {
+// File mode pre-check: resi issues (double / invalid characters) in the
+// template → confirmation (red panel with the reason per row).
+const duplicateCheck = ref<ResiIssuesReport | null>(null)
+
+const processAction = useAsyncAction(async (acknowledge = false): Promise<void> => {
   serverError.value = ''
   formError.value = validate()
   if (formError.value) return
@@ -149,11 +183,13 @@ const processAction = useAsyncAction(async (): Promise<void> => {
     const resp = await axios.post('/api/loader/process', {
       template,
       rechecked,
-      custIdCod: custIdCod.value.trim(),
-      custIdNonCod: custIdNonCod.value.trim(),
-      wilayah: wilayah.value || undefined,
+      wilayahId: Number(wilayahId.value),
+      kotaId: Number(kotaId.value),
       convertWeightFromActual: convertWeight.value,
+      acknowledgeWarnings: acknowledge,
+      locale: locale.value, // language of the issue notes in the file
     })
+    duplicateCheck.value = null
     report.value = resp.data.report
     download.value = resp.data.download
     historyKey.value++
@@ -161,9 +197,32 @@ const processAction = useAsyncAction(async (): Promise<void> => {
   } catch (err) {
     report.value = null
     download.value = null
+    const e = err as { response?: { status?: number; data?: { code?: string; details?: { resiIssues?: ResiIssuesReport } } } }
+    if (e.response?.status === 409 && e.response.data?.code === 'RESI_ISSUES' && e.response.data.details?.resiIssues) {
+      duplicateCheck.value = e.response.data.details.resiIssues
+      return
+    }
     serverError.value = apiErrorMessage(err, 'loader.processFailed')
   }
 })
+// Another template / wilayah → the confirmation no longer applies.
+watch([templateFile, recheckedFile, wilayahId, kotaId, mode], () => {
+  duplicateCheck.value = null
+})
+
+/** The API pre-check's resi issues (rows with their reasons) for the red panel. */
+const precheckDuplicates = computed<ResiIssuesReport | null>(() => {
+  const r = precheckResult.value?.resiIssues
+  return r && r.summary.withIssues ? r : null
+})
+/** Title of a resi issue panel: totals per kind. */
+function issueTitle(r: ResiIssuesReport) {
+  return {
+    count: formatNumber(r.summary.withIssues),
+    dup: formatNumber(r.summary.duplicateRows),
+    invalid: formatNumber(r.summary.invalidRows),
+  }
+}
 
 // --- API mode: pre-check → job → poll ---------------------------------------------------
 const precheckResult = ref<Precheck | null>(null)
@@ -228,11 +287,11 @@ const startAction = useAsyncAction(async (acknowledge: boolean): Promise<void> =
   try {
     const started = await startApiJob({
       template: await fileToPayload(templateFile.value!),
-      custIdCod: custIdCod.value.trim(),
-      custIdNonCod: custIdNonCod.value.trim(),
-      wilayah: wilayah.value || undefined,
+      wilayahId: Number(wilayahId.value),
+      kotaId: Number(kotaId.value),
       convertWeightFromActual: convertWeight.value,
       acknowledgeWarnings: acknowledge,
+      locale: locale.value,
     })
     precheckResult.value = null
     historyKey.value++
@@ -273,6 +332,7 @@ const resumeAction = useAsyncAction(async (): Promise<void> => {
 function precheckLabel(code: string): MessageKey {
   const map: Record<string, MessageKey> = {
     DUPLICATE_RESI: 'loader.pcDuplicateResi',
+    INVALID_RESI: 'loader.pcInvalidResi',
     EMPTY_RESI: 'loader.pcEmptyResi',
     KECAMATAN_MISSING: 'loader.warnKodeposMissing',
     KECAMATAN_AMBIGUOUS: 'loader.warnKodeposAmbiguous',
@@ -284,7 +344,10 @@ function precheckLabel(code: string): MessageKey {
 }
 
 function precheckItem(item: Record<string, unknown>): string {
-  if (item.resi !== undefined) return `${item.resi} ×${item.count}`
+  if (item.resi !== undefined) {
+    const rows = Array.isArray(item.rows) ? ` — ${t('loader.dupRowsList', { rows: (item.rows as number[]).join(', ') })}` : ''
+    return `${item.resi} ×${item.count}${rows}`
+  }
   if (item.kecamatan !== undefined) {
     const opts = Array.isArray(item.options) ? `: ${(item.options as string[]).join(', ')}` : ''
     return `${item.kecamatan}${opts} — ${t('loader.rowsCount', { count: Number(item.count) })}`
@@ -412,6 +475,7 @@ function refreshTokenState(): void {
 
 onMounted(() => {
   void loadSummary()
+  void loadWilayahOptions()
   window.addEventListener('focus', refreshTokenState)
 })
 onUnmounted(() => {
@@ -493,24 +557,38 @@ onUnmounted(() => {
           </router-link>
         </div>
 
-        <div class="grid gap-4 md:grid-cols-3">
+        <!-- Wilayah + kota (Master Data) → read-only Cust IDs + sender columns -->
+        <div class="grid gap-4 md:grid-cols-2">
           <div>
-            <label class="label" for="cust-noncod">{{ t('loader.custIdNonCod') }}</label>
-            <input id="cust-noncod" v-model="custIdNonCod" class="input" inputmode="numeric" maxlength="15" autocomplete="off" required :disabled="busy" />
-          </div>
-          <div>
-            <label class="label" for="cust-cod">{{ t('loader.custIdCod') }}</label>
-            <input id="cust-cod" v-model="custIdCod" class="input" inputmode="numeric" maxlength="15" autocomplete="off" required :disabled="busy" />
-          </div>
-          <div>
-            <label class="label" for="loader-wilayah">{{ t('loader.wilayah') }}</label>
-            <select id="loader-wilayah" v-model="wilayah" class="input" :disabled="busy">
-              <option value="">{{ t('loader.wilayahAuto') }}</option>
-              <option v-for="w in summary?.wilayah || []" :key="w.wilayah || ''" :value="w.wilayah || ''">{{ w.wilayah }}</option>
+            <label class="label" for="loader-wilayah">{{ t('loader.wilayah') }}<span class="text-rose-500"> *</span></label>
+            <select id="loader-wilayah" v-model="wilayahId" class="input" required :disabled="busy">
+              <option value="" disabled>{{ t('loader.chooseWilayah') }}</option>
+              <option v-for="w in wilayahOptions" :key="w.id" :value="String(w.id)">{{ w.name }}</option>
             </select>
           </div>
+          <div>
+            <label class="label" for="loader-kota">{{ t('loader.kota') }}<span class="text-rose-500"> *</span></label>
+            <select id="loader-kota" v-model="kotaId" class="input" required :disabled="busy || !selectedWilayah">
+              <option value="" disabled>{{ selectedWilayah ? t('loader.chooseKota') : t('loader.chooseWilayahFirst') }}</option>
+              <option v-for="k in kotaOptions" :key="k.id" :value="String(k.id)">{{ k.aliases.length ? `${k.kota} · ${k.aliases.join(', ')}` : k.kota }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="label flex items-center gap-1.5" for="cust-noncod">{{ t('loader.custIdNonCod') }} <Lock :size="12" class="text-slate-400" /></label>
+            <input id="cust-noncod" :value="custIdNonCod" class="input bg-slate-50 font-mono text-slate-600" readonly tabindex="-1" :placeholder="t('loader.custIdAuto')" />
+          </div>
+          <div>
+            <label class="label flex items-center gap-1.5" for="cust-cod">{{ t('loader.custIdCod') }} <Lock :size="12" class="text-slate-400" /></label>
+            <input id="cust-cod" :value="custIdCod" class="input bg-slate-50 font-mono text-slate-600" readonly tabindex="-1" :placeholder="t('loader.custIdAuto')" />
+          </div>
         </div>
-        <p class="-mt-2 text-xs text-slate-400">{{ t('loader.custIdHint') }} {{ t('loader.wilayahHint') }}</p>
+        <p v-if="wilayahLoadError" class="-mt-2 rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700">{{ wilayahLoadError }}</p>
+        <p v-else-if="selectedWilayah && (!custIdCod || !custIdNonCod)" class="-mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800">{{ t('loader.custIdMissing') }}</p>
+        <p class="-mt-2 text-xs text-slate-400">{{ t('loader.custIdReadOnlyHint') }} {{ t('loader.wilayahHint') }}</p>
+        <div v-if="sender" class="-mt-1 grid gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 sm:grid-cols-2" data-testid="sender-preview">
+          <p><span class="font-semibold text-slate-500">{{ t('loader.kotaPengirim') }}</span> {{ sender.kotaPengirim || t('loader.kotaPengirimEmpty') }}</p>
+          <p><span class="font-semibold text-slate-500">{{ t('loader.namaPengirim') }}</span> {{ sender.namaPengirim }}</p>
+        </div>
 
         <!-- Rule 4 switch: Berat from Berat Asli -->
         <div class="flex items-start gap-3 rounded-xl border border-slate-200 px-3 py-2.5">
@@ -544,7 +622,15 @@ onUnmounted(() => {
           <p v-for="e in precheckResult.errors" :key="e.code" class="text-sm text-rose-700">
             {{ t(precheckLabel(e.code), { count: formatNumber(e.columns?.length || 0) }) }}<span v-if="e.columns">: {{ e.columns.join(', ') }}</span>
           </p>
-          <details v-for="w in precheckResult.warnings" :key="w.code" class="rounded-lg bg-white/70 px-3 py-2">
+          <ResiIssuesPanel
+            v-if="precheckDuplicates"
+            :rows="precheckDuplicates.rows"
+            :truncated="precheckDuplicates.truncated"
+            :title-key="'loader.resiIssue.title'"
+            :title-params="issueTitle(precheckDuplicates)"
+            hint="loader.dupHintPrecheck"
+          />
+          <details v-for="w in precheckResult.warnings.filter((x) => x.code !== 'DUPLICATE_RESI' && x.code !== 'INVALID_RESI')" :key="w.code" class="rounded-lg bg-white/70 px-3 py-2">
             <summary class="cursor-pointer text-sm font-medium text-amber-800">{{ t(precheckLabel(w.code), { count: formatNumber(w.count) }) }}</summary>
             <ul class="mt-2 max-h-40 space-y-0.5 overflow-auto font-mono text-xs text-slate-700">
               <li v-for="(item, i) in w.items" :key="i">{{ precheckItem(item) }}</li>
@@ -567,6 +653,23 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- File mode pre-check: resi double must be confirmed -->
+        <ResiIssuesPanel
+          v-if="duplicateCheck && mode === 'file'"
+          :rows="duplicateCheck.rows"
+          :truncated="duplicateCheck.truncated"
+          :title-key="'loader.resiIssue.title'"
+          :title-params="issueTitle(duplicateCheck)"
+          hint="loader.dupHintConfirm"
+        >
+          <div class="flex gap-2">
+            <LoadingButton class="btn btn-primary px-3 py-1.5 text-xs" :loading-text="t('loader.processing')" :loading="processAction.pending" @click="processAction.run(true)">
+              <Play :size="14" /> {{ t('loader.dupProcessAnyway') }}
+            </LoadingButton>
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" :disabled="processAction.pending" @click="duplicateCheck = null">{{ t('common.cancel') }}</button>
+          </div>
+        </ResiIssuesPanel>
+
         <div class="flex flex-wrap items-center gap-3">
           <LoadingButton
             v-if="mode === 'file'"
@@ -574,7 +677,7 @@ onUnmounted(() => {
             :loading-text="t('loader.processing')"
             :loading="processAction.pending"
             :disabled="!canRun || busy"
-            @click="processAction.run()"
+            @click="processAction.run(false)"
           >
             <Wand2 :size="16" /> {{ t('loader.process') }}
           </LoadingButton>
@@ -710,10 +813,26 @@ onUnmounted(() => {
         <p v-if="report.nilaiBarangDefaulted" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.defaultedNote', { count: formatNumber(report.nilaiBarangDefaulted) }) }}</p>
         <p v-if="report.addressCleaned" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.addressCleanedNote', { count: formatNumber(report.addressCleaned) }) }}</p>
         <p v-if="report.sheets" class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.sheetsNote', { main: report.sheets[0], phone: report.senderPhone || '' }) }}</p>
+        <p v-if="report.sender" class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.senderNote', { wilayah: report.sender.wilayah, kota: report.sender.kota, kotaPengirim: report.sender.kotaPengirim || t('loader.kotaPengirimEmpty'), namaPengirim: report.sender.namaPengirim }) }}</p>
         <p v-if="report.kotaPenerima" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.kotaPenerimaNote', { mapped: formatNumber(report.kotaPenerima.mapped), fallback: formatNumber(report.kotaPenerima.fallback) }) }}</p>
         <p class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.columnsNote', { columns: report.columns.join(' · ') }) }}</p>
       </div>
 
+      <ResiIssuesPanel
+        v-if="report.resiIssues && report.resiIssues.summary.withIssues"
+        :rows="report.resiIssues.rows"
+        :truncated="report.resiIssues.truncated"
+        :title-key="'loader.resiIssue.title'"
+        :title-params="issueTitle(report.resiIssues)"
+        hint="loader.dupHintResult"
+      />
+      <ResiIssuesPanel
+        v-if="report.rechecked?.duplicateResi && report.rechecked.duplicateResi.groups"
+        :rows="duplicatesAsIssueRows(report.rechecked.duplicateResi)"
+        :title-key="'loader.dupRecheckedTitle'"
+        :title-params="{ count: formatNumber(report.rechecked.duplicateResi.groups), rows: formatNumber(report.rechecked.duplicateResi.rows) }"
+        hint="loader.dupHintRechecked"
+      />
       <p v-if="!warnings.length" class="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
         <CheckCircle2 :size="16" /> {{ t('loader.noWarnings') }}
       </p>
@@ -732,6 +851,7 @@ onUnmounted(() => {
       <LoaderJobHistory :key="historyKey" class="xl:col-span-2" @track="(j) => { setMode(j.mode); trackJob(j) }" @download="(d) => downloadAction.run(d)" />
       <KotaWilayahSettings />
     </div>
+    <WilayahMasterCard :options="wilayahOptions" :error="wilayahLoadError" />
     <HubKotaSettings />
   </div>
 </template>

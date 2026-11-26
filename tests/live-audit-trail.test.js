@@ -149,7 +149,13 @@ async function main() {
     assert.strictEqual(meta.after.username, uname);
     assert.deepStrictEqual(meta.after.roles, ["finance"]);
     assert.strictEqual(meta.actor.username, "superadmin");
-    assert.deepStrictEqual(meta.actor.roles, ["super_admin"]);
+    // The actor snapshot = the roles in effect for the session (all assigned
+    // roles after login; the seed account may hold more than super_admin).
+    const actorRoles = (await query(
+      "SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id JOIN users u ON u.id = ur.user_id WHERE u.username = 'superadmin' ORDER BY r.name"
+    )).map((x) => x.name);
+    assert.deepStrictEqual(meta.actor.roles, actorRoles);
+    assert.ok(meta.actor.roles.includes("super_admin"));
     assert.strictEqual(meta.module, "account_management");
   });
 

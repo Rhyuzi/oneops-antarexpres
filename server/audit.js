@@ -272,6 +272,7 @@ function describe(action, d, entityId) {
     case "file.move": return `Moved file "${x.file_name || entityId}"`;
     case "file.delete": return `Deleted file "${x.file_name || entityId}"`;
     case "recheck.credentials_rejected": return `SiCepat rejected the configured credentials (HTTP ${x.upstream_status || "?"})`;
+    case "loader.resi_checked": return `Checked resi list${x.file ? ` "${x.file}"` : ""}${x.rows !== undefined ? ` (${x.rows} resi, ${x.with_issues || 0} with issues)` : ""}`;
     case "loader.processed": return `Generated loader file${x.template ? ` from "${x.template}"` : ""}${x.rows ? ` (${x.rows} rows)` : ""}`;
     case "loader.process_failed": return `Loader processing failed (${String(x.reason || "invalid input").replace(/_/g, " ")})`;
     case "loader.reference_imported": return `Imported kodepos reference${x.file ? ` "${x.file}"` : ""}`;

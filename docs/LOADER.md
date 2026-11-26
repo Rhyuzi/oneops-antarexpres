@@ -89,7 +89,7 @@ Table `loader_kota_wilayah`. When a kecamatan name exists in several
 wilayah, a row's `Kota_Tujuan` decides which one is used. For example,
 Purwadadi exists in TASIK and SUBANG, and *Kota Banjar* → TASIK. Lookup order:
 
-1. The wilayah selected on the page.
+1. The wilayah selected on the page (its kodepos code, `master_wilayah.kodepos_wilayah`).
 2. The mapping.
 3. Inference from the Kota_Tujuan text.
 
@@ -121,10 +121,11 @@ Warrior sheets.
 | DESKRIPSI BARANG, HARGA BARANG | Nama Barang, Nilai Barang (Rules 9/12/14) |
 | HARGA COD | Nilai COD on COD rows, `0` on Non-COD rows |
 | SERVICE | `REG` (`LOADER_JNE_SERVICE`) |
-| NAMA PENGIRIM | the hub's sender name (default `SICEPAT <CITY>`) |
+| **NAMA PENGIRIM** | `<NAMA PENGIRIM base of the wilayah> <kota picked in the form>`, spaces collapsed — e.g. `SICEPAT TASIKMALAYA Sukaraja` (base empty → `SICEPAT <WILAYAH>`) |
+| **KOTA PENGIRIM** | the selected kota's KOTA PENGIRIM when set (migration 015; **Tasikmalaya**: Mangkubumi / Singaparna / Sukaraja → `Tasikmalaya`, Ciamis → `Ciamis`). Otherwise: empty for Tasikmalaya (Banjar, Pangandaran …; case-insensitive, also code `TASIK`), and the wilayah name for every other wilayah (`Subang`, `Sukabumi`, `Garut`) |
 | **NO HANDPHONE PENGIRIM** | **`6282121221355`** (`LOADER_SENDER_PHONE`), numeric |
-| CUSTOMER ID | the cust id (numeric) |
-| SS, PROVINSI, KONTAK, KETERANGAN, PACKING KAYU, ASURANSI, sender address columns | empty (headers kept) |
+| CUSTOMER ID | the wilayah's Cust ID by COD status — `Y` → COD id, `N` → Non-COD id (numeric) |
+| SS, PROVINSI, KONTAK, KETERANGAN, PACKING KAYU, ASURANSI, other sender address columns | empty (headers kept) |
 
 Header names follow the Data Warrior sheets, except three that were renamed
 at the operator's request: TANGGAL → **TGL DROP**, UPDATE → **STATUS**, and
@@ -177,6 +178,44 @@ a label empty to use Kota_Tujuan. Re-import DATAHUB there or with
 `npm run loader:hubs -- DATAHUB.xlsx`. This refreshes the master columns and
 **never overwrites labels**. The loader page shows the hubs read-only.
 
+## Resi double (duplicate resi)
+
+Checked on the template **before** the transform and export
+(`server/loader/duplicates.js`). Resi are compared as digits with leading
+zeros ignored, so hidden characters never hide a duplicate: spaces, NBSP,
+zero-width characters, a leading apostrophe, `.0`, or number vs text.
+Every occurrence is listed with its **Excel row**.
+
+| Where | Behaviour |
+|---|---|
+| File mode | `/process` answers **409 `RESI_ISSUES`** (double and/or invalid characters) with `details.duplicateResi = { groups, rows, items: [{ resi, count, rows }] }`. The page shows a red panel (resi, count, Excel rows); **Process anyway** resends with `acknowledgeWarnings: true` |
+| API mode | the pre-check warning `DUPLICATE_RESI` lists the same items (with rows) in the red panel; confirming starts the job (each resi is looked up once) |
+| Export | every row is kept; duplicate rows are painted **red**: fill `FFC7CE`, dark red text `9C0006`, red borders, bold NO RESI SICEPAT / ORDER ID. NO RESI SICEPAT and ORDER ID are written as clean digits (hidden characters removed) |
+| Result | `report.duplicateResi` (+ `highlighted` rows) is shown as a red panel. The rechecked file's own duplicates (first non-empty number wins) appear in `report.rechecked.duplicateResi`. Job history stores counts only |
+
+### Issue notes ("keterangan issue")
+
+Every red resi carries its reason (`server/loader/resiIssues.js`; the texts
+are in the language picked in the app — `loader.resiIssue.*`, mirrored by
+`TEXT` on the server):
+
+| Issue | Note (ID / EN) |
+|---|---|
+| Resi double | `Resi double (baris 26, 49)` / `Duplicate resi (rows 26, 49)` — every twin row |
+| Visible non-digit characters | `Karakter tidak valid: !, ? (hanya boleh angka)` / `Invalid characters: !, ? (digits only)` |
+| Both | the reasons joined with `; ` |
+| Valid, unique | empty (filterable) |
+
+Hidden characters (spaces, NBSP, zero-width characters, a leading `'`, a
+trailing `.0`) are cleaned and are **not** issues.
+
+- The template pre-check covers both issue types: `INVALID_RESI`
+  is a new warning, and the file-mode 409 is now `RESI_ISSUES` with
+  `details.resiIssues.rows = [{ row, resi, issues }]`. The red panel shows Row ·
+  Resi · Issue note. In the Loader JNE file the 34 columns are unchanged: issue
+  rows are red, and the reason is a **cell note** on NO RESI SICEPAT, in the
+  request's `locale`.
+
 ## Empty data warnings
 
 Checked on every template data row; these warnings never block and never
@@ -211,6 +250,8 @@ mysql -u <user> -p <db> < database/migrations/010_kebutuhan_loader.sql
 mysql -u <user> -p <db> < database/migrations/011_loader_jobs_kota_wilayah.sql
 mysql -u <user> -p <db> < database/migrations/012_loader_hub_kota.sql   # DATAHUB hubs + 2 labels
 mysql -u <user> -p <db> < database/migrations/013_master_data.sql      # Master Data permissions
+mysql -u <user> -p <db> < database/migrations/014_master_wilayah.sql   # wilayah / Cust ID / kota (+ seed)
+mysql -u <user> -p <db> < database/migrations/015_kota_pengirim.sql    # KOTA PENGIRIM per kota (+ Tasikmalaya seed)
 # reference data — any ONE of:
 npm run loader:import -- "KEBUTUHAN LOADER.xlsx"                # upsert into DB
 mysql -u <user> -p <db> < database/seeds/003_kebutuhan_loader.sql # pre-generated
@@ -235,8 +276,9 @@ On XAMPP: `C:\xampp\mysql\bin\mysql.exe -u root <db> < database\migrations\012_l
 |---|---|
 | 3PL template (.xlsx/.xls) | First sheet whose header row has Resi, Berat, Berat Asli (+ the columns below) |
 | Rechecked Excel (file mode) | Any sheet with **Resi** and **No HP Penerima** |
-| `cust_id_non_cod` / `cust_id_cod` | Both required, digits only (max 15 — written as Excel numbers), must differ (Rule 17) |
-| Wilayah (optional) | Only breaks ties when a kecamatan exists in several wilayah; "Automatic" uses the mapping / `Kota_Tujuan` |
+| **Wilayah** (required) | From **Master Data → Wilayah** (migration 014). Also scopes the kodepos lookup when a kecamatan exists in several wilayah |
+| **Kota** (required) | Only the kota of the selected wilayah (**Master Data → Kota per wilayah**); a wilayah with one kota selects it automatically |
+| Cust ID Non-COD (N) / COD (Y) | **Read-only**: filled from **Master Data → Cust ID per wilayah**. The request carries only `wilayahId` + `kotaId`; the server reads the Cust IDs from the DB (client values are ignored). A wilayah without Cust IDs is refused (`CUST_ID_MISSING`) |
 
 Required template columns: Resi, Berat, Berat Asli, No HP Penerima,
 Kecamatan Tujuan, Nilai Barang, COD, Biaya, Nilai COD, Status Terakhir.
@@ -298,15 +340,16 @@ changes go through `/api/master-data` (MASTER-DATA.md). `{name, data}` = file wi
 
 | Method | Path | Permission / notes |
 |---|---|---|
-| POST | `/process` | `loader.run` — `{ template, rechecked, custIdCod, custIdNonCod, wilayah?, convertWeightFromActual? }` → `{ report, download, jobId }` |
+| POST | `/process` | `loader.run` — `{ template, rechecked, wilayahId, kotaId, convertWeightFromActual? }` → `{ report (incl. `sender`), download, jobId }`; 400 `WILAYAH_REQUIRED` / `KOTA_REQUIRED` / `KOTA_MISMATCH` / `WILAYAH_UNKNOWN` / `CUST_ID_MISSING` |
 | GET | `/download/:id` | `loader.run` — `.xlsx` attachment; owner only, 15 min |
-| POST | `/precheck` | `loader.run` — `{ template, wilayah? }` → `{ precheck }` incl. `notices` (no API call) |
-| POST | `/jobs` | `loader.run` + `loader.recheck`; token headers required. Body: `{ template, custIdCod, custIdNonCod, wilayah?, convertWeightFromActual?, sicepatUserId?, acknowledgeWarnings? }`. Responses: `202 { job }`; `400 PRECHECK_FAILED`; `409 PRECHECK_WARNINGS` (resend with `acknowledgeWarnings: true`); `409 JOB_ALREADY_RUNNING`; `400 SICEPAT_CREDENTIALS_MISSING` |
+| POST | `/precheck` | `loader.run` — `{ template, wilayahId }` → `{ precheck }` incl. `notices` (no API call) |
+| POST | `/jobs` | `loader.run` + `loader.recheck`; token headers required. Body: `{ template, wilayahId, kotaId, convertWeightFromActual?, sicepatUserId?, acknowledgeWarnings? }`. Responses: `202 { job }`; `400 PRECHECK_FAILED`; `409 PRECHECK_WARNINGS` (resend with `acknowledgeWarnings: true`); `409 JOB_ALREADY_RUNNING`; `400 SICEPAT_CREDENTIALS_MISSING` |
 | GET | `/jobs` | `loader.view` — own jobs; `?scope=all` with `loader.manage_settings` |
 | GET | `/jobs/:id` | `loader.view` — progress, report and download when done (owner, or `manage_settings`) |
 | POST | `/jobs/:id/resume` | `loader.recheck` — paused jobs only; uses the token headers of this request |
 | POST | `/jobs/:id/cancel` | `loader.recheck` — running jobs |
 | GET | `/settings/kota-wilayah` | `loader.view` — `{ mappings, wilayah }` |
+| GET | `/wilayah-options` | `loader.view` — `{ wilayah: [{ id, name, kodeposWilayah, namaPengirimBase, custIdNonCod, custIdCod, isTasikmalaya, kota: [{ id, kota, aliases }] }] }` (form + read-only card) |
 | GET | `/settings/hubs` | `loader.view` — `{ hubs }` (503 without migration 012) |
 | GET | `/reference/summary`, `/reference?wilayah=&search=` | `loader.view` |
 

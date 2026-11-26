@@ -88,6 +88,24 @@ const routes = [
         meta: { titleKey: 'nav.mdKodepos', permission: 'master_data.view', tab: 'kodepos' },
       },
       {
+        path: 'master-data/wilayah',
+        name: 'master-data-wilayah',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdWilayah', permission: 'master_data.view', tab: 'wilayah' },
+      },
+      {
+        path: 'master-data/cust-id',
+        name: 'master-data-cust-id',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdCustId', permission: 'master_data.view', tab: 'cust-id' },
+      },
+      {
+        path: 'master-data/wilayah-kota',
+        name: 'master-data-wilayah-kota',
+        component: () => import('../views/MasterDataView.vue'),
+        meta: { titleKey: 'nav.mdWilayahKota', permission: 'master_data.view', tab: 'wilayah-kota' },
+      },
+      {
         path: 'master-data/audit',
         name: 'master-data-audit',
         component: () => import('../views/MasterDataView.vue'),

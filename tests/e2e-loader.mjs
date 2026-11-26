@@ -39,6 +39,18 @@ XLSX.utils.book_append_sheet(recWb, XLSX.utils.aoa_to_sheet([['Resi', 'Penerima'
 const RECHECKED = join(work, 'rechecked-e2e.xlsx')
 writeFileSync(RECHECKED, XLSX.write(recWb, { type: 'buffer', bookType: 'xlsx' }))
 
+// Template with a "resi double": row 1 repeated at the end with a hidden NBSP.
+const tplAoa = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { header: 1, defval: '' })
+const resiCol = tplAoa[0].indexOf('Resi')
+const DUP_RESI = String(tplAoa[1][resiCol]).replace(/[^0-9]/g, '')
+const dupRow = tplAoa[1].slice()
+dupRow[resiCol] = ` ${DUP_RESI} `
+const DUP_LAST_ROW = tplAoa.length + 1
+const dupWb = XLSX.utils.book_new()
+XLSX.utils.book_append_sheet(dupWb, XLSX.utils.aoa_to_sheet([...tplAoa, dupRow]), 'Sheet1')
+const DUP_TEMPLATE = join(work, 'TEMPLATE 3PL - dup-e2e.xlsx')
+writeFileSync(DUP_TEMPLATE, XLSX.write(dupWb, { type: 'buffer', bookType: 'xlsx' }))
+
 // Mock SiCepat awbDetail: every AWB gets a number, records the forwarded token.
 const MOCK_PORT = Number(process.env.MOCK_SICEPAT_PORT || 39191)
 const mockCalls = []
@@ -71,6 +83,9 @@ async function setFile(index, filePath) {
   await send('DOM.setFileInputFiles', { nodeId: nodeIds[index], files: [filePath] })
 }
 const clickText = (text) => ev(`[...document.querySelectorAll('button')].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`)
+/** Picks the <option> whose text starts with `text` (Master Data wilayah / kota selects). */
+const choose = (sel, text) => ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); const o = [...el.options].find((x) => x.text.trim().startsWith(${JSON.stringify(text)})); if (!o) throw new Error('no option ' + ${JSON.stringify(text)} + ' in ${sel}: ' + [...el.options].map((x) => x.text).join('|')); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, o.value); el.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+const optionTexts = (sel) => ev(`[...document.querySelector(${JSON.stringify(sel)}).options].filter((o) => o.value).map((o) => o.text.trim())`)
 
 let passed = 0, failed = 0
 async function test(name, fn) { try { await fn(); passed++; console.log(`  ok    ${name}`) } catch (e) { failed++; console.log(`  FAIL  ${name}\n        ${e.message}`) } }
@@ -118,16 +133,57 @@ async function main() {
     await waitFor(`/[0-9]+ kecamatan in the reference/.test(document.body.innerText)`, 'summary')
   })
 
-  await test('client validation: files + two different cust ids required (no request sent)', async () => {
+  await test('client validation: files, wilayah and kota required (no request sent)', async () => {
     const m = requests.length
     await clickText('Process & download')
     await waitFor(`document.body.innerText.includes('Choose both Excel files first.')`, 'files required')
     await setFile(0, TEMPLATE); await setFile(1, RECHECKED)
     await waitFor(`document.body.innerText.includes('rechecked-e2e.xlsx')`, 'files picked')
-    await type('#cust-noncod', '82220303'); await type('#cust-cod', '82220303')
     await clickText('Process & download')
-    await waitFor(`document.body.innerText.includes('The COD and Non-COD cust IDs must be different.')`, 'same ids')
+    await waitFor(`document.body.innerText.includes('Choose a wilayah.')`, 'wilayah required')
+    await choose('#loader-wilayah', 'Subang')
+    await clickText('Process & download')
+    await waitFor(`document.body.innerText.includes('Choose a kota for the selected wilayah.')`, 'kota required')
     assert(!requests.slice(m).includes('/api/loader/process'), 'request sent despite invalid form')
+  })
+
+  await test('Cust IDs: read-only, filled from the wilayah; kota list filtered by wilayah; sender preview', async () => {
+    assert(await ev(`document.querySelector('#cust-noncod').readOnly && document.querySelector('#cust-cod').readOnly`), 'cust id inputs must be readonly')
+    // Typing into a readonly input changes nothing for the user (the value is bound to the wilayah).
+    assert((await ev(`document.querySelector('#cust-noncod').value`)) === '82220303', 'Subang N')
+    assert((await ev(`document.querySelector('#cust-cod').value`)) === '82220300', 'Subang Y')
+    const subangKota = await optionTexts('#loader-kota')
+    assert(JSON.stringify(subangKota) === JSON.stringify(['Kalijati', 'Kartini', 'Subang Barat']), `Subang kota: ${subangKota}`)
+    await choose('#loader-kota', 'Kalijati')
+    let preview = await ev(`document.querySelector('[data-testid="sender-preview"]').innerText`)
+    assert(preview.includes('Subang') && preview.includes('SICEPAT SUBANG Kalijati'), `preview: ${preview}`)
+
+    // Another wilayah: kota list + Cust IDs change, the Subang kota is dropped.
+    await choose('#loader-wilayah', 'Tasikmalaya')
+    await sleep(100)
+    const tasikKota = await optionTexts('#loader-kota')
+    assert(tasikKota.length === 6 && tasikKota.some((k) => k.startsWith('Sukaraja') && k.includes('sukareja')), `Tasik kota: ${tasikKota}`)
+    assert(!tasikKota.includes('Kalijati'), 'kota of another wilayah listed')
+    assert((await ev(`document.querySelector('#loader-kota').value`)) === '', 'previous kota kept across wilayah')
+    assert((await ev(`document.querySelector('#cust-noncod').value`)) === '82191603' && (await ev(`document.querySelector('#cust-cod').value`)) === '82191600', 'Tasik cust ids')
+    await choose('#loader-kota', 'Sukaraja')
+    preview = await ev(`document.querySelector('[data-testid="sender-preview"]').innerText`)
+    assert(preview.includes('KOTA PENGIRIM Tasikmalaya') && preview.includes('SICEPAT TASIKMALAYA Sukaraja'), `preview: ${preview}`)
+    // Tasikmalaya per kota: Ciamis → Ciamis, Banjar → empty (migration 015).
+    await choose('#loader-kota', 'Ciamis')
+    preview = await ev(`document.querySelector('[data-testid="sender-preview"]').innerText`)
+    assert(preview.includes('KOTA PENGIRIM Ciamis') && preview.includes('SICEPAT TASIKMALAYA Ciamis'), `preview: ${preview}`)
+    await choose('#loader-kota', 'Banjar')
+    preview = await ev(`document.querySelector('[data-testid="sender-preview"]').innerText`)
+    assert(preview.includes('KOTA PENGIRIM (empty)') && preview.includes('SICEPAT TASIKMALAYA Banjar'), `preview: ${preview}`)
+
+    // Garut has one kota → picked automatically.
+    await choose('#loader-wilayah', 'Garut')
+    await waitFor(`document.querySelector('#loader-kota').selectedOptions[0]?.text === 'Kota Garut'`, 'single kota auto-selected')
+    // Back to Subang / Kalijati for the run below.
+    await choose('#loader-wilayah', 'Subang')
+    await choose('#loader-kota', 'Kalijati')
+    await shot('wilayah-form')
   })
 
   await test('weight switch shown, ON by default', async () => {
@@ -136,7 +192,6 @@ async function main() {
   })
 
   await test('process → automatic download of the styled .xlsx + result summary', async () => {
-    await type('#cust-cod', '82220300')
     await clickText('Process & download')
     await waitFor(`document.body.innerText.includes('No warnings') || document.body.innerText.includes('Needs attention')`, 'result', 60000)
     let file = ''
@@ -153,6 +208,15 @@ async function main() {
     assert(jne.getRow(1).getCell(5).value === 'RESI JNE' && jne.getRow(2).getCell(5).value === null, 'RESI JNE header kept, cell empty')
     assert(typeof jne.getRow(2).getCell(34).value === 'number', 'CUSTOMER ID numeric')
     assert(jne.getRow(2).getCell(33).value === 6282121221355, 'NO HANDPHONE PENGIRIM')
+    // Subang / Kalijati: KOTA PENGIRIM = wilayah, NAMA PENGIRIM = base + kota, Subang Cust IDs.
+    const at = (h) => headers.indexOf(h) + 1
+    for (let r = 2; r <= jne.rowCount; r++) {
+      const row = jne.getRow(r)
+      assert(row.getCell(at('KOTA PENGIRIM')).value === 'Subang', `KOTA PENGIRIM row ${r}: ${row.getCell(at('KOTA PENGIRIM')).value}`)
+      assert(row.getCell(at('NAMA PENGIRIM')).value === 'SICEPAT SUBANG Kalijati', `NAMA PENGIRIM row ${r}`)
+      const cod = row.getCell(at('COD')).value
+      assert(row.getCell(at('CUSTOMER ID')).value === (cod === 'Y' ? 82220300 : 82220303), `CUSTOMER ID row ${r} (${cod})`)
+    }
     const txt = await ev('document.body.innerText')
     // The sample's gerai (Subang Sukamelang LM) has no KOTA PENERIMA label yet → only the fallback warning.
     const lbl = await ev(`(async () => (await (await fetch('/api/loader/settings/hubs')).json()).hubs.find((h) => h.hub === 'Subang Sukamelang LM')?.kota_penerima || '')()`)
@@ -183,6 +247,50 @@ async function main() {
     assert(readdirSync(downloads).length > before, 'no second download')
   })
 
+  await test('resi double: red warning before processing, "Process anyway" → red rows in the file + result', async () => {
+    const m = requests.length
+    await setFile(0, DUP_TEMPLATE)
+    await waitFor(`document.body.innerText.includes('dup-e2e.xlsx')`, 'dup template picked')
+    await clickText('Process & download')
+    await waitFor(`!!document.querySelector('[data-testid="resi-issues"]')`, 'resi issue warning', 30000)
+    const panel = await ev(`document.querySelector('[data-testid="resi-issues"]').innerText`)
+    assert(panel.includes('2 resi with issues — 2 double, 0 invalid characters'), `panel: ${panel}`)
+    // The reason next to each red resi: "Duplicate resi (rows 2, N)" on both rows.
+    const notes = await ev(`[...document.querySelectorAll('[data-testid="resi-issues"] [data-testid="issue-note"]')].map((td) => td.innerText)`)
+    assert(notes.length === 2 && notes.every((n) => n === `Duplicate resi (rows 2, ${DUP_LAST_ROW})`), `notes: ${notes}`)
+    assert(panel.includes(DUP_RESI), `resi: ${panel}`)
+    // Red: the panel and its rows use the rose palette (same red as the file).
+    const colors = await ev(`(() => { const tr = document.querySelector('[data-testid="resi-issues"] tr[data-issue]'); const cs = getComputedStyle(tr); return [cs.backgroundColor, cs.color] })()`)
+    // Tailwind rose-50 background / rose-800 text (exact rgb() or oklch() depending on the build).
+    assert(colors[0] !== 'rgba(0, 0, 0, 0)' && colors[0] !== colors[1], `row colours ${colors}`)
+    assert(await ev(`document.querySelector('[data-testid="resi-issues"] tr[data-issue]').className.includes('bg-rose-50') && document.querySelector('[data-testid="resi-issues"] tr[data-issue]').className.includes('text-rose-800')`), 'red row classes')
+    // Only the 409 pre-check request so far — nothing was built yet.
+    assert(requests.slice(m).filter((r) => r === '/api/loader/process').length === 1, 'process called more than once')
+    await shot('dup-confirm')
+    await clickText('Process anyway')
+    await waitFor(`document.body.innerText.includes('These rows are marked red in the downloaded file.')`, 'result duplicate panel', 60000)
+    let file = ''
+    for (let i = 0; i < 100 && !file; i++) { file = readdirSync(downloads).find((f) => f.includes('dup-e2e')) || ''; if (!file) await sleep(100) }
+    assert(file, 'download missing')
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(readFileSync(join(downloads, file)))
+    const jne = wb.worksheets[0]
+    const red = []
+    jne.eachRow((row, n) => { const c = row.getCell(4); if (n > 1 && c.fill?.fgColor?.argb === 'FFFFC7CE') red.push(c.value) })
+    assert(red.length === 2 && red.every((v) => String(v) === String(Number(DUP_RESI))), `red rows ${red}`)
+    const cellNotes = []
+    jne.eachRow((row, n) => { const c = row.getCell(4); if (n > 1 && c.note) cellNotes.push(typeof c.note === 'string' ? c.note : c.note.texts.map((x) => x.text).join('')) })
+    assert(cellNotes.length === 2 && cellNotes.every((t) => t === `Duplicate resi (rows 2, ${DUP_LAST_ROW})`), `cell notes: ${cellNotes}`)
+    await shot('dup-result')
+    // Indonesian
+    await ev(`[...document.querySelector('aside').querySelectorAll('button[aria-pressed]')].find((b) => b.getAttribute('lang') === 'id').click()`)
+    await sleep(300)
+    const idText = await ev(`document.querySelector('[data-testid="resi-issues"]').innerText`)
+    assert(idText.includes('2 resi bermasalah — 2 double, 0 karakter tidak valid') && idText.toLowerCase().includes('keterangan issue'), `id: ${idText}`)
+    assert(idText.includes(`Resi double (baris 2, ${DUP_LAST_ROW})`), `id note: ${idText}`)
+    await ev(`[...document.querySelector('aside').querySelectorAll('button[aria-pressed]')].find((b) => b.getAttribute('lang') === 'en').click()`)
+    await setFile(0, TEMPLATE)
+  })
+
   await test('API mode: rechecker token from Settings → pre-check → job progress → automatic download', async () => {
     // Fresh tab: Chrome's "multiple automatic downloads" limiter is per tab
     // and origin, and this download starts from the poll timer, not a click.
@@ -195,7 +303,8 @@ async function main() {
     await ev(`localStorage.setItem('sicepat.bearerToken', 'e2e-bearer'); localStorage.setItem('sicepat.permissionToken', 'e2e-perm'); localStorage.setItem('sicepat.userId', 'e2e-user'); window.dispatchEvent(new Event('focus'))`)
     await waitFor(`document.body.innerText.includes('The active rechecker token')`, 'token ready')
     await setFile(0, TEMPLATE)
-    await type('#cust-noncod', '82220303'); await type('#cust-cod', '82220300')
+    await waitFor(`document.querySelector('#loader-wilayah').options.length > 1`, 'wilayah options')
+    await choose('#loader-wilayah', 'Subang'); await choose('#loader-kota', 'Kalijati')
     // Count completed downloads via CDP events: Chrome may save a same-named
     // file over the previous one, so the folder's file count is not reliable.
     const completed = () => downloadEvents.filter((e) => /^downloadProgress\s+completed/.test(e)).length

@@ -16,6 +16,8 @@
  */
 
 const { REQUIRED_COLUMNS, normalizeResi, codCategory, detectEmpty, isEmptyCell } = require("./transform");
+const { findDuplicateResi } = require("./duplicates");
+const { analyzeResi } = require("./resiIssues");
 
 const LIST_CAP = 200;
 
@@ -96,7 +98,8 @@ function precheckTemplate(table, { lookupKodepos, lookupKotaPenerima = null }) {
     seen.set(key, (seen.get(key) || 0) + 1);
   }
   result.counts.uniqueResi = seen.size;
-  const duplicates = [...seen].filter(([, n]) => n > 1).map(([resi, count]) => ({ resi, count }));
+  // Resi double with Excel rows (same detector as the run / the export).
+  const duplicates = findDuplicateResi(table).items.map(({ resi, count, rows }) => ({ resi, count, rows: rows.slice(0, 50) }));
 
   // Kecamatan → kodepos (same lookup + mapping as the real run).
   const missing = new Map();
@@ -129,6 +132,14 @@ function precheckTemplate(table, { lookupKodepos, lookupKotaPenerima = null }) {
 
   const add = (code, items) => items.length && result.warnings.push({ code, count: items.length, items: items.slice(0, LIST_CAP) });
   add("DUPLICATE_RESI", duplicates);
+  // Resi with visible non-digit characters ("4691353011!"), with their rows.
+  const resiIssues = analyzeResi(table);
+  add(
+    "INVALID_RESI",
+    resiIssues.rows.filter((r) => r.issues.some((x) => x.type === "invalid")).map((r) => ({ row: r.row, resi: r.resi, chars: r.issues.find((x) => x.type === "invalid").chars }))
+  );
+  const issueRows = resiIssues.rows.filter((r) => r.issues.length);
+  result.resiIssues = { summary: resiIssues.summary, rows: issueRows.slice(0, LIST_CAP), truncated: issueRows.length > LIST_CAP };
   if (emptyResi) result.warnings.push({ code: "EMPTY_RESI", count: emptyResi, items: [] });
   add("KECAMATAN_MISSING", [...missing].map(([kecamatan, count]) => ({ kecamatan, count })));
   add("KECAMATAN_AMBIGUOUS", [...ambiguous.values()]);

@@ -82,7 +82,8 @@ async function test(name, fn) {
   try { await fn(); passed++; console.log(`  ok    ${name}`) } catch (e) { failed++; console.log(`  FAIL  ${name}\n        ${e.message}`) }
 }
 const assert = (c, m) => { if (!c) throw new Error(m) }
-const navHasAudit = `[...document.querySelectorAll('aside a, nav a')].some((a) => a.textContent.includes('Audit Trail'))`
+// Exact label: "Master Data Audit Trail" (master_data.audit) is a different menu item.
+const navHasAudit = `[...document.querySelectorAll('aside a, nav a')].some((a) => a.textContent.trim() === 'Audit Trail')`
 const rowCount = `document.querySelectorAll('table tbody tr').length`
 
 async function main() {

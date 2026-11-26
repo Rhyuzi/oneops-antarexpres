@@ -22,6 +22,7 @@ import {
   updateRow,
   type EntityDef,
   type MasterRow,
+  type MasterWilayahOption,
 } from '../../lib/masterData'
 
 const props = defineProps<{ entity: EntityDef }>()
@@ -39,6 +40,10 @@ const search = ref('')
 const wilayahFilter = ref('')
 const missingOnly = ref(false)
 const wilayahOptions = ref<string[]>([])
+// master_wilayah rows (FK wilayah_id) for the cust-id / wilayah-kota forms + filter.
+const masterWilayah = ref<MasterWilayahOption[]>([])
+const wilayahIdFilter = ref('')
+const canImport = computed(() => props.entity.importable !== false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const rowOps = useKeyedActions()
 
@@ -59,6 +64,7 @@ async function load(): Promise<void> {
       search: search.value || undefined,
       wilayah: props.entity.filters.includes('wilayah') && wilayahFilter.value ? wilayahFilter.value : undefined,
       missingLabel: props.entity.filters.includes('missingLabel') && missingOnly.value ? '1' : undefined,
+      wilayahId: props.entity.filters.includes('wilayahId') && wilayahIdFilter.value ? wilayahIdFilter.value : undefined,
     })
     if (seq !== requestSeq) return
     rows.value = r.rows
@@ -72,9 +78,12 @@ async function load(): Promise<void> {
 
 async function loadMeta(): Promise<void> {
   try {
-    wilayahOptions.value = (await getMeta()).wilayah
+    const meta = await getMeta()
+    wilayahOptions.value = meta.wilayah
+    masterWilayah.value = meta.masterWilayah ?? []
   } catch {
     wilayahOptions.value = []
+    masterWilayah.value = []
   }
 }
 
@@ -87,7 +96,7 @@ watch(searchInput, (v) => {
     void load()
   }, 300)
 })
-watch([wilayahFilter, missingOnly], () => {
+watch([wilayahFilter, missingOnly, wilayahIdFilter], () => {
   page.value = 1
   void load()
 })
@@ -95,6 +104,7 @@ watch(() => props.entity.key, () => {
   searchInput.value = ''
   search.value = ''
   wilayahFilter.value = ''
+  wilayahIdFilter.value = ''
   missingOnly.value = false
   page.value = 1
   closeForm()
@@ -197,17 +207,19 @@ onMounted(() => {
         <p class="mt-1 text-xs text-slate-500">{{ t(entity.hint) }}</p>
       </div>
       <div v-if="canManage" class="flex flex-wrap gap-2">
-        <LoadingButton class="btn btn-secondary px-3 py-1.5 text-sm" :loading-text="t('masterData.importing')" :loading="importAction.pending" @click="fileInput?.click()">
-          <Upload :size="15" /> {{ t('masterData.import') }}
-        </LoadingButton>
-        <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="pickFile" />
+        <template v-if="canImport">
+          <LoadingButton class="btn btn-secondary px-3 py-1.5 text-sm" :loading-text="t('masterData.importing')" :loading="importAction.pending" @click="fileInput?.click()">
+            <Upload :size="15" /> {{ t('masterData.import') }}
+          </LoadingButton>
+          <input ref="fileInput" type="file" accept=".xlsx,.xls" class="hidden" @change="pickFile" />
+        </template>
         <button type="button" class="btn btn-primary px-3 py-1.5 text-sm" @click="openForm(null)">
           <Plus :size="15" /> {{ t('masterData.add') }}
         </button>
       </div>
     </div>
-    <p v-if="canManage" class="text-xs text-slate-400">{{ t(entity.importHint) }}</p>
-    <p v-else class="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500">{{ t('masterData.readOnlyNotice') }}</p>
+    <p v-if="canManage && canImport && entity.importHint" class="text-xs text-slate-400">{{ t(entity.importHint) }}</p>
+    <p v-else-if="!canManage" class="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500">{{ t('masterData.readOnlyNotice') }}</p>
 
     <div class="flex flex-wrap items-center gap-3">
       <div class="relative min-w-[220px] flex-1">
@@ -217,6 +229,10 @@ onMounted(() => {
       <select v-if="entity.filters.includes('wilayah')" v-model="wilayahFilter" class="input w-44 py-2" :aria-label="t('masterData.wilayah')">
         <option value="">{{ t('masterData.allWilayah') }}</option>
         <option v-for="w in wilayahOptions" :key="w" :value="w">{{ w }}</option>
+      </select>
+      <select v-if="entity.filters.includes('wilayahId')" v-model="wilayahIdFilter" class="input w-44 py-2" :aria-label="t('masterData.wilayah')">
+        <option value="">{{ t('masterData.allWilayah') }}</option>
+        <option v-for="w in masterWilayah" :key="w.id" :value="String(w.id)">{{ w.name }}</option>
       </select>
       <label v-if="entity.filters.includes('missingLabel')" class="flex items-center gap-2 text-xs text-slate-600">
         <input v-model="missingOnly" type="checkbox" class="rounded border-slate-300" /> {{ t('masterData.hubs.onlyMissing') }}
@@ -289,9 +305,15 @@ onMounted(() => {
         </div>
         <div v-for="f in entity.fields" :key="f.key">
           <label class="label" :for="`md-${f.key}`">{{ t(f.label) }}<span v-if="f.required" class="text-rose-500"> *</span></label>
-          <template v-if="f.type === 'wilayah' && !f.allowNew">
+          <template v-if="f.type === 'masterWilayah'">
             <select :id="`md-${f.key}`" v-model="form[f.key]" class="input" :required="f.required">
               <option value="" disabled>{{ t('masterData.chooseWilayah') }}</option>
+              <option v-for="w in masterWilayah" :key="w.id" :value="String(w.id)">{{ w.name }}</option>
+            </select>
+          </template>
+          <template v-else-if="f.type === 'wilayah' && !f.allowNew">
+            <select :id="`md-${f.key}`" v-model="form[f.key]" class="input" :required="f.required">
+              <option value="" :disabled="f.required">{{ f.required ? t('masterData.chooseWilayah') : t('common.dash') }}</option>
               <option v-for="w in wilayahOptions" :key="w" :value="w">{{ w }}</option>
             </select>
           </template>

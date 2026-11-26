@@ -59,10 +59,11 @@ test("kodepos: 5 digits, wilayah uppercased, kecamatan ≥ 2 chars", () => {
   throwsCode(() => md.validateKodepos({ wilayah: "", kecamatan: "Ab", kodepos: "46385" }), "WILAYAH_REQUIRED");
   throwsCode(() => md.validateKodepos({ wilayah: "T", kecamatan: "A", kodepos: "46385" }), "KECAMATAN_INVALID");
 });
-test("entities: the three references, with their audit entity types; unknown entity → 404", () => {
-  assert.deepStrictEqual(Object.keys(md.ENTITIES), ["hubs", "kota-wilayah", "kodepos"]);
-  assert.deepStrictEqual(Object.values(md.ENTITIES).map((e) => e.entityType), ["gerai_kota_mapping", "kota_wilayah_mapping", "kodepos_reference"]);
-  assert.deepStrictEqual(Object.values(md.ENTITIES).map((e) => e.table), ["loader_hub_kota", "loader_kota_wilayah", "kebutuhan_loader"]);
+test("entities: the loader references + wilayah master, with their audit entity types; unknown entity → 404", () => {
+  assert.deepStrictEqual(Object.keys(md.ENTITIES), ["hubs", "kota-wilayah", "kodepos", "wilayah", "cust-id", "wilayah-kota"]);
+  assert.deepStrictEqual(Object.values(md.ENTITIES).map((e) => e.entityType), ["gerai_kota_mapping", "kota_wilayah_mapping", "kodepos_reference", "master_wilayah", "master_cust_id", "master_wilayah_kota"]);
+  assert.deepStrictEqual(Object.values(md.ENTITIES).map((e) => e.table), ["loader_hub_kota", "loader_kota_wilayah", "kebutuhan_loader", "master_wilayah", "master_cust_id", "master_wilayah_kota"]);
+  assert.deepStrictEqual(mdAudit.ENTITY_TYPES, Object.values(md.ENTITIES).map((e) => e.entityType), "audit filter knows every entity");
   assert.throws(() => md.entityOf("users"), (e) => e.status === 404);
   for (const e of Object.values(md.ENTITIES)) assert.ok(e.entityType.length <= 30, "fits storage_audit_logs.entity_type");
 });

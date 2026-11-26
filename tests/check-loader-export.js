@@ -75,7 +75,11 @@ async function viaApi(base) {
   });
   if (login.status !== 200) throw new Error(`login failed (HTTP ${login.status})`);
   const cookie = (login.headers["set-cookie"] || []).map((c) => c.split(";")[0]).join("; ");
-  const proc = await httpRequest(base, "POST", "/api/loader/process", { cookie, body: { template: file, rechecked: file, ...IDS } });
+  // The API takes Master Data ids (wilayah + kota); the server reads the Cust IDs.
+  const { query } = require("../server/db");
+  const { wilayahIds } = require("./wilayah-ids");
+  const ids = await wilayahIds(query);
+  const proc = await httpRequest(base, "POST", "/api/loader/process", { cookie, body: { template: file, rechecked: file, ...ids } });
   if (proc.status !== 200) throw new Error(`process failed (HTTP ${proc.status}): ${proc.json && proc.json.message}`);
   const dl = await httpRequest(base, "GET", `/api/loader/download/${proc.json.download.id}`, { cookie });
   if (dl.status !== 200) throw new Error(`download failed (HTTP ${dl.status})`);

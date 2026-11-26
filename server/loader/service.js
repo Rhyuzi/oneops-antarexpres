@@ -13,6 +13,15 @@ const { buildKodeposLookup, loadReference } = require("./kodepos");
 const { loadKotaMap } = require("./settings");
 const { buildHubLookup, loadHubs } = require("./hubs");
 const { buildJneSheet, JNE_HEADERS, JNE_SHEET, JNE_SHEET_STYLE } = require("./jne");
+const { findDuplicateResi, summarizeDuplicates } = require("./duplicates");
+const { analyzeResi, issueText } = require("./resiIssues");
+
+const ISSUE_LIST_CAP = 500;
+/** Rows with a resi issue, JSON-safe (UI panel + 409 details). */
+function issuesView(analysis) {
+  const rows = analysis.rows.filter((r) => r.issues.length);
+  return { summary: analysis.summary, rows: rows.slice(0, ISSUE_LIST_CAP), truncated: rows.length > ISSUE_LIST_CAP };
+}
 const { config } = require("../config");
 
 // Digits only, ≤ 15 (CUST ID is written as an Excel number; 15 digits keep full precision).
@@ -66,8 +75,16 @@ function makeLookup({ reference, kotaMap, wilayah }) {
  */
 async function buildLoaderFile({
   table, templateName, rechecked, recheckedMeta, ids, wilayah, reference, kotaMap,
-  hubs = [], convertWeight = true, senderPhone = config.loader.senderPhone, date,
+  hubs = [], convertWeight = true, senderPhone = config.loader.senderPhone, date, sender = null,
+  locale = "id", // language of the issue notes in the file
 }) {
+  // Resi double: detected on the template BEFORE the transform (Excel row
+  // numbers); the rows stay in the file but are painted red.
+  const duplicates = findDuplicateResi(table);
+  // Every resi issue (double and/or invalid characters) → red row + reason note.
+  const issues = analyzeResi(table);
+  const issueRows = new Set(issues.byRow.keys());
+  const rowNotes = new Map([...issues.byRow].map(([n, list]) => [n, issueText(list, locale)]));
   const result = transformTemplate(table, {
     rechecked,
     convertWeight: convertWeight !== false,
@@ -81,9 +98,16 @@ async function buildLoaderFile({
     lookupKotaPenerima: buildHubLookup(hubs),
     senderPhone,
     service: config.loader.jneService,
+    sender,
+    duplicateRows: issueRows,
+    rowNotes,
     ...(date ? { date } : {}),
   });
-  const buffer = await writeWorkbook([{ name: JNE_SHEET, headers: jne.headers, rows: jne.rows, ...JNE_SHEET_STYLE }]);
+  const buffer = await writeWorkbook([{
+    name: JNE_SHEET, headers: jne.headers, rows: jne.rows, ...JNE_SHEET_STYLE,
+    highlightRows: jne.highlightRows, emphasizeColumns: ["NO RESI SICEPAT", "ORDER ID / REFERENCE NUMBER"],
+    rowNotes: jne.notes,
+  }]);
   return {
     buffer,
     filename: outputFileName(templateName),
@@ -97,6 +121,12 @@ async function buildLoaderFile({
       template: { name: templateName, sheet: table.sheetName },
       rechecked: recheckedMeta,
       wilayah: wilayah || null,
+      // Wilayah / kota picked in the form and the sender columns they produce.
+      sender: sender || null,
+      // Template rows sharing a resi (painted red in the file).
+      duplicateResi: { ...summarizeDuplicates(duplicates), highlighted: jne.highlightRows.size },
+      // Per row: double and/or invalid characters (structured; texts per language in the UI).
+      resiIssues: issuesView(issues),
       referenceRows: reference.length,
     },
   };
@@ -123,23 +153,46 @@ async function processLoader({
   kotaMap = null,
   hubs = null, // gerai/HUB master (KOTA PENERIMA); DB otherwise
   convertWeight = true, // Rule 4 switch: Berat from Berat Asli
+  sender = null, // KOTA PENGIRIM / NAMA PENGIRIM from the wilayah + kota (wilayah.js)
+  acknowledgeDuplicates = true, // false → resi issues stop the run (409) until confirmed
+  locale = "id",
 }) {
   const ids = validateCustIds(custIdCod, custIdNonCod);
   const table = readTemplate(templateBuffer, templateName);
+  assertNoUnconfirmedDuplicates(table, acknowledgeDuplicates);
   const rechecked = readRechecked(recheckedBuffer, recheckedName);
   const { reference, kotaMap: mapping, hubs: hubRows } = await loadLookupData({ referenceRows, kotaMap, hubs });
   return buildLoaderFile({
     table,
     templateName,
     rechecked: rechecked.map,
-    recheckedMeta: { mode: "file", name: recheckedName, sheet: rechecked.sheetName, rows: rechecked.rows, duplicates: rechecked.duplicates },
+    recheckedMeta: { mode: "file", name: recheckedName, sheet: rechecked.sheetName, rows: rechecked.rows, duplicates: rechecked.duplicates, duplicateResi: rechecked.duplicateResi },
     ids,
     wilayah,
     reference,
     kotaMap: mapping,
     hubs: hubRows,
     convertWeight,
+    sender,
+    locale,
   });
+}
+
+/**
+ * Pre-check before the 3PL transform: resi double in the template must be
+ * confirmed by the operator. 409 DUPLICATE_RESI carries every duplicate resi
+ * with its Excel rows (details.duplicateResi) for the red warning in the UI.
+ */
+function assertNoUnconfirmedDuplicates(table, acknowledged) {
+  if (acknowledged) return;
+  const issues = analyzeResi(table);
+  if (!issues.summary.withIssues) return;
+  const err = new LoaderInputError("The template has resi issues (double or invalid characters). Review them and confirm to continue.", "RESI_ISSUES", {
+    duplicateResi: summarizeDuplicates(findDuplicateResi(table)),
+    resiIssues: issuesView(issues),
+  });
+  err.status = 409;
+  throw err;
 }
 
 /** Request body → Rule 4 switch. Missing = ON (previous behaviour); only an explicit false/"false"/0 turns it off. */
@@ -157,4 +210,6 @@ module.exports = {
   makeLookup,
   validateCustIds,
   outputFileName,
+  assertNoUnconfirmedDuplicates,
+  issuesView,
 };

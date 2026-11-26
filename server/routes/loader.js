@@ -6,11 +6,11 @@
  *
  * Phone source — two modes:
  *   FILE  POST /api/loader/process            loader.run
- *         body { template, rechecked, custIdCod, custIdNonCod, wilayah?,
+ *         body { template, rechecked, wilayahId, kotaId, acknowledgeWarnings?,
  *                convertWeightFromActual? (default true — Rule 4 switch) }
  *         → { report, download, jobId }   (synchronous)
  *   API   POST /api/loader/jobs               loader.run + loader.recheck
- *         body { template, custIdCod, custIdNonCod, wilayah?, acknowledgeWarnings?,
+ *         body { template, wilayahId, kotaId, acknowledgeWarnings?,
  *                convertWeightFromActual?,
  *                sicepatUserId }
  *         headers: Authorization: Bearer <SiCepat token>, x-permission-token
@@ -20,7 +20,11 @@
  *         GET  /api/loader/jobs/:id             progress / report / download
  *         POST /api/loader/jobs/:id/resume      loader.recheck (fresh token headers)
  *         POST /api/loader/jobs/:id/cancel      loader.run
- *   POST /api/loader/precheck                   loader.run — body { template, wilayah? }
+ *   POST /api/loader/precheck                   loader.run — body { template, wilayahId }
+ *
+ * wilayahId / kotaId refer to Master Data (migration 014). The server reads
+ * the Cust IDs (N / Y), the kodepos scope and KOTA / NAMA PENGIRIM from the
+ * DB (server/loader/wilayah.js) — the client never supplies Cust IDs.
  *   GET  /api/loader/download/:id               loader.run — .xlsx attachment, owner only
  *
  * Reference + settings:
@@ -28,6 +32,7 @@
  *   GET  /api/loader/reference/summary | /reference         loader.view
  *   GET  /api/loader/settings/kota-wilayah                  loader.view
  *   GET  /api/loader/settings/hubs                          loader.view (gerai/HUB → KOTA PENERIMA)
+ *   GET  /api/loader/wilayah-options                        loader.view (wilayah → cust IDs + kota)
  *
  * Files travel as base64 in JSON (no multipart dependency).
  */
@@ -43,6 +48,8 @@ const { precheckTemplate, uniqueResiList } = require("../loader/precheck");
 const settings = require("../loader/settings");
 const hubs = require("../loader/hubs");
 const jobs = require("../loader/jobs");
+const wilayahMaster = require("../loader/wilayah");
+const { localeOf } = require("../loader/resiIssues");
 
 const router = express.Router();
 
@@ -52,6 +59,12 @@ const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 function fail(res, err) {
   const status = err.status && err.status < 500 ? err.status : 500;
   if (status >= 500) console.error("[loader]", err.dbMessage || err.message);
+  if (settings.isMissingTable(err) && /master_(wilayah|cust_id)/.test(String(err.sqlMessage || err.dbMessage || err.message))) {
+    return res.status(503).json({
+      ok: false,
+      message: "The wilayah master is not installed. Run database/migrations/014_master_wilayah.sql.",
+    });
+  }
   if (settings.isMissingTable(err)) {
     return res.status(503).json({
       ok: false,
@@ -87,7 +100,8 @@ function decodeFile(input, label) {
   return { name, buffer };
 }
 
-const wilayahOf = (body) => (body && body.wilayah ? String(body.wilayah).trim().slice(0, 100) : null);
+/** "Tasikmalaya / Sukaraja" — job history label (no customer data). */
+const contextLabel = (ctx) => [ctx.wilayah.name, ctx.kota && ctx.kota.kota].filter(Boolean).join(" / ");
 const canSeeAll = (req) => req.user.roles.includes("super_admin") || (req.user.permissions && req.user.permissions.has("loader.manage_settings"));
 
 /** Short summary for the audit trail (no customer data). */
@@ -108,6 +122,7 @@ function auditSummary(report) {
     unknown_cod: report.unknownCod.length,
     kota_penerima_fallback: report.kotaPenerima ? report.kotaPenerima.fallback : 0,
     empty_cells: report.empty ? report.empty.cells : 0,
+    duplicate_resi: report.duplicateResi ? report.duplicateResi.groups : 0,
   };
 }
 
@@ -116,19 +131,25 @@ function auditSummary(report) {
 router.post("/process", requirePermission("loader.run"), async (req, res) => {
   try {
     const body = req.body || {};
+    // Wilayah + kota → Cust IDs, kodepos scope and sender columns, all from
+    // Master Data. Cust IDs sent by the client are ignored (read-only in the UI).
+    const ctx = await wilayahMaster.resolveLoaderContext(body);
     const template = decodeFile(body.template, "template");
     const rechecked = decodeFile(body.rechecked, "rechecked");
-    const wilayah = wilayahOf(body);
 
     const out = await service.processLoader({
       templateBuffer: template.buffer,
       templateName: template.name,
       recheckedBuffer: rechecked.buffer,
       recheckedName: rechecked.name,
-      custIdCod: body.custIdCod,
-      custIdNonCod: body.custIdNonCod,
-      wilayah,
+      custIdCod: ctx.ids.cod,
+      custIdNonCod: ctx.ids.nonCod,
+      wilayah: ctx.kodeposWilayah,
       convertWeight: service.convertWeightOf(body),
+      sender: ctx.sender,
+      // Resi double → 409 DUPLICATE_RESI (rows listed) until the operator confirms.
+      acknowledgeDuplicates: body.acknowledgeWarnings === true,
+      locale: localeOf(body.locale),
     });
 
     const download = jobs.storeResult(req.user.id, out.buffer, out.filename);
@@ -136,8 +157,9 @@ router.post("/process", requirePermission("loader.run"), async (req, res) => {
       userId: req.user.id,
       templateName: template.name,
       recheckedName: rechecked.name,
-      ids: service.validateCustIds(body.custIdCod, body.custIdNonCod),
-      wilayah,
+      ids: ctx.ids,
+      wilayah: ctx.kodeposWilayah,
+      wilayahLabel: contextLabel(ctx),
       report: out.report,
       download,
     });
@@ -147,7 +169,11 @@ router.post("/process", requirePermission("loader.run"), async (req, res) => {
       action: "loader.processed",
       entityType: "loader_file",
       description: `Generated loader file "${out.filename}" (${out.report.rows} rows)`,
-      after: { file: out.filename, rows: out.report.rows, cust_id_cod: String(body.custIdCod).trim(), cust_id_non_cod: String(body.custIdNonCod).trim() },
+      after: {
+        file: out.filename, rows: out.report.rows, wilayah: ctx.wilayah.name, kota: ctx.kota.kota,
+        cust_id_cod: ctx.ids.cod, cust_id_non_cod: ctx.ids.nonCod,
+        kota_pengirim: ctx.sender.kotaPengirim, nama_pengirim: ctx.sender.namaPengirim,
+      },
       metadata: { ...auditSummary(out.report), mode: "file", job: jobId },
     });
 
@@ -182,16 +208,18 @@ router.get("/download/:id", requirePermission("loader.run"), (req, res) => {
 // --- pre-check -----------------------------------------------------------------------
 
 /** Reads the template and runs the pre-check with the real lookup + mapping. */
-async function runPrecheck(body) {
+async function runPrecheck(body, ctx = null) {
+  // The pre-check only needs the kodepos scope (wilayah); the kota is checked at run time.
+  const context = ctx || (await wilayahMaster.resolveLoaderContext(body, { requireKota: false }));
+  const wilayah = context.kodeposWilayah;
   const template = decodeFile(body.template, "template");
-  const wilayah = wilayahOf(body);
   const table = service.readTemplate(template.buffer, template.name);
   const lookupData = await service.loadLookupData();
   const precheck = precheckTemplate(table, {
     lookupKodepos: service.makeLookup({ ...lookupData, wilayah }),
     lookupKotaPenerima: hubs.buildHubLookup(lookupData.hubs),
   });
-  return { template, table, wilayah, lookupData, precheck };
+  return { template, table, wilayah, lookupData, precheck, ctx: context };
 }
 
 router.post("/precheck", requirePermission("loader.run"), async (req, res) => {
@@ -208,14 +236,15 @@ router.post("/precheck", requirePermission("loader.run"), async (req, res) => {
 router.post("/jobs", requirePermission("loader.run"), requirePermission("loader.recheck"), async (req, res) => {
   try {
     const body = req.body || {};
-    const ids = service.validateCustIds(body.custIdCod, body.custIdNonCod);
+    const ctx = await wilayahMaster.resolveLoaderContext(body);
+    const ids = ctx.ids;
     const credentials = credentialsFromRequest(req, "sicepatUserId");
     if (!credentials) throw badRequest("Missing SiCepat credentials. Configure them in Settings.", "SICEPAT_CREDENTIALS_MISSING");
     if (jobs.hasActiveJob(req.user.id)) {
       throw httpError(409, "You already have a loader recheck job running. Wait for it to finish or cancel it.", "JOB_ALREADY_RUNNING");
     }
 
-    const { template, table, wilayah, lookupData, precheck } = await runPrecheck(body);
+    const { template, table, wilayah, lookupData, precheck } = await runPrecheck(body, ctx);
     if (!precheck.ok) {
       return res.status(400).json({ ok: false, code: "PRECHECK_FAILED", message: "The template did not pass the pre-check.", precheck });
     }
@@ -233,6 +262,9 @@ router.post("/jobs", requirePermission("loader.run"), requirePermission("loader.
       templateName: template.name,
       ids,
       wilayah,
+      wilayahLabel: contextLabel(ctx),
+      sender: ctx.sender,
+      locale: localeOf(body.locale),
       reference: lookupData.reference,
       kotaMap: lookupData.kotaMap,
       hubs: lookupData.hubs,
@@ -292,6 +324,19 @@ router.post("/jobs/:id/cancel", requirePermission("loader.run"), async (req, res
 });
 
 // --- reference ----------------------------------------------------------------------------
+
+/**
+ * Wilayah master for the Loader form and the read-only reference card:
+ * wilayah → cust IDs (N / Y), breakdown kota, NAMA PENGIRIM base.
+ * Edited only in Master Data.
+ */
+router.get("/wilayah-options", async (_req, res) => {
+  try {
+    return res.json({ ok: true, wilayah: await wilayahMaster.loadWilayahOptions() });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
 
 router.get("/reference/summary", async (_req, res) => {
   try {

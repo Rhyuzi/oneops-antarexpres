@@ -47,6 +47,12 @@ const JNE_SHEET_STYLE = {
 const LIST_CAP = 500;
 
 /** Today (server-local calendar day) as a UTC-midnight Date — Excel shows it unshifted. */
+/** " 4691353011 " / "'4691353011" / "4691353011​" → "4691353011" (leading zeros kept). */
+function cleanResi(value) {
+  if (typeof value !== "string") return value;
+  return value.replace(/[\s ​-‍﻿]+/g, "").replace(/^'/, "");
+}
+
 function excelToday(now = new Date()) {
   return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
 }
@@ -59,8 +65,18 @@ function excelToday(now = new Date()) {
  * @param {string} opts.senderPhone   NO HANDPHONE PENGIRIM (digits)
  * @param {string} [opts.service="REG"]
  * @param {Date}   [opts.date]        TANGGAL (default: today)
+ * @param {Set<number>} [opts.duplicateRows]  Excel row numbers (template) of rows with a resi
+ *        issue; the matching output rows are returned in highlightRows (painted red)
+ * @param {Map<number,string>} [opts.rowNotes]  Excel row (template) → issue reason; returned
+ *        per output row index in notes (cell note on NO RESI SICEPAT)
+ * @param {{kotaPengirim: string, namaPengirim: string}} [opts.sender]
+ *        From the wilayah + kota picked in the Loader form (server/loader/wilayah.js):
+ *        KOTA PENGIRIM ("" for Tasikmalaya, else the wilayah name) and
+ *        NAMA PENGIRIM ("<base> <kota>") for every row. Without it (tests,
+ *        older callers) NAMA PENGIRIM comes from the gerai/HUB master and
+ *        KOTA PENGIRIM stays empty.
  */
-function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG", date = excelToday() }) {
+function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG", date = excelToday(), sender = null, duplicateRows = null, rowNotes = null }) {
   const at = (name) => result.headers.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
   const col = {
     resi: at("Resi"), berat: at("Berat"), penerima: at("Penerima"),
@@ -73,8 +89,12 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
   const report = { mapped: 0, fallback: 0, fallbackGroups: [] };
   const groups = new Map();
 
+  const highlightRows = new Set();
+  const notes = new Map();
   const rows = result.rows.map((row, i) => {
     const meta = (result.meta && result.meta[i]) || { rowNumber: i + 2, geraiCode: "", geraiName: "" };
+    if (duplicateRows && duplicateRows.has(meta.rowNumber)) highlightRows.add(i);
+    if (rowNotes && rowNotes.has(meta.rowNumber)) notes.set(i, rowNotes.get(meta.rowNumber));
     const cod = String(v(row, col.cod)).trim();
     const kotaTujuan = String(v(row, col.kota));
     const kp = lookupKotaPenerima(meta, kotaTujuan);
@@ -87,7 +107,9 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
       if (g.rows.length < 50) g.rows.push(meta.rowNumber);
       groups.set(key, g);
     }
-    const resi = v(row, col.resi);
+    // Hidden characters (spaces, NBSP, zero-width, leading apostrophe) never
+    // reach the JNE file: the resi is written as clean digits.
+    const resi = cleanResi(v(row, col.resi));
     const values = {
       "TGL DROP": date,
       CATEGORY: cod === "Y" ? "COD" : cod === "N" ? "NON COD" : "",
@@ -108,7 +130,8 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
       COD: cod,
       // Non-COD rows carry no COD amount (as in the Data Warrior sheets).
       "HARGA COD": cod === "N" ? 0 : v(row, col.nilaiCod),
-      "NAMA PENGIRIM": kp.namaPengirim,
+      "NAMA PENGIRIM": sender ? sender.namaPengirim : kp.namaPengirim,
+      "KOTA PENGIRIM": sender ? sender.kotaPengirim : "",
       "NO HANDPHONE PENGIRIM": senderPhone,
       "CUSTOMER ID": v(row, col.cust),
     };
@@ -116,9 +139,9 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
   });
 
   report.fallbackGroups = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, LIST_CAP);
-  return { headers: JNE_HEADERS, rows, report };
+  return { headers: JNE_HEADERS, rows, report, highlightRows, notes };
 }
 
 if (JNE_HEADERS.length !== 34) throw new Error("Loader JNE layout must have exactly 34 columns");
 
-module.exports = { JNE_HEADERS, JNE_SHEET, JNE_HEADER_FILL, RESI_JNE_HEADER_FILL, JNE_SHEET_STYLE, buildJneSheet, excelToday };
+module.exports = { JNE_HEADERS, JNE_SHEET, JNE_HEADER_FILL, RESI_JNE_HEADER_FILL, JNE_SHEET_STYLE, buildJneSheet, excelToday, cleanResi };

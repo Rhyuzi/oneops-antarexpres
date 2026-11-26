@@ -12,6 +12,9 @@ UI: sidebar group **MASTER DATA** (`/ops/master-data/*`):
 | Gerai / HUB → KOTA PENERIMA | `loader_hub_kota` (DATAHUB.xlsx, migration 012) | `gerai_kota_mapping` |
 | Kota_Tujuan → Wilayah | `loader_kota_wilayah` (migration 011) | `kota_wilayah_mapping` |
 | Kodepos Reference | `kebutuhan_loader` (migration 010) | `kodepos_reference` |
+| Wilayah | `master_wilayah` (migration 014) | `master_wilayah` |
+| Cust ID per wilayah | `master_cust_id` — FK `wilayah_id` → `master_wilayah.id` | `master_cust_id` |
+| Kota per wilayah | `master_wilayah_kota` — FK `wilayah_id` → `master_wilayah.id` | `master_wilayah_kota` |
 | Master Data Audit Trail | `storage_audit_logs` (actions `master_data.*`) | — |
 
 Each reference page offers search, filters (wilayah, or "only hubs without a
@@ -52,11 +55,18 @@ Requires 010–012.
 | HUB | name ≥ 3 chars (unique, matched ignoring case/spaces/punctuation); analytic code letters/digits ≤ 30 (stored uppercase); KOTA PENERIMA / NAMA PENGIRIM optional — empty = loader fallback (Kota_Tujuan) / default (`SICEPAT <CITY>`) |
 | Kota_Tujuan → wilayah | kota ≥ 3 chars (unique, normalized); wilayah must exist in the kodepos reference |
 | Kodepos | wilayah required (stored uppercase), kecamatan ≥ 2 chars, kodepos exactly 5 digits; (wilayah, kecamatan, kodepos) unique |
+| Wilayah | name ≥ 3 chars (unique, normalized); kodepos code optional but must exist in the kodepos reference (unique); NAMA PENGIRIM base optional (empty = `SICEPAT <WILAYAH>`) |
+| Cust ID per wilayah | wilayah required (must exist — FK); one row per wilayah (409 otherwise); N and Y digits only (≤ 15, not 0) and different (also a DB `CHECK`) |
+| Kota per wilayah | wilayah required (FK); kota ≥ 2 chars, unique per wilayah; aliases = comma-separated search names (e.g. `sukareja`), de-duplicated; KOTA PENGIRIM optional (≤ 100, empty = wilayah rule) |
+
+A wilayah that still has a Cust ID row or kota cannot be deleted (FK `ON DELETE RESTRICT` → **409** "This wilayah still has cust IDs or kota"). Delete the children first.
 
 A duplicate key returns **409**, invalid input **400** (message translated in
 the UI), and an unknown record **404**.
 
 ## Import (Excel, ≤ 10 MB)
+
+Wilayah, Cust ID and Kota per wilayah have no Excel import (few rows; edited in the forms).
 
 | Entity | File |
 |---|---|
@@ -71,7 +81,7 @@ Every mutation writes one row to `storage_audit_logs`:
 | Column | Value |
 |---|---|
 | `action` | `master_data.create` / `.update` / `.delete` / `.import`, shown as CREATE / UPDATE / DELETE / IMPORT |
-| `entity_type` | `gerai_kota_mapping` / `kota_wilayah_mapping` / `kodepos_reference` |
+| `entity_type` | `gerai_kota_mapping` / `kota_wilayah_mapping` / `kodepos_reference` / `master_wilayah` / `master_cust_id` / `master_wilayah_kota` |
 | `entity_id` | the record id (none for an import) |
 | `metadata` | v2 envelope: `before` / `after` JSON snapshots, the actor (username, name, roles), and `details` with `entity`, `record_key` and, for imports, `file` / `sheet` |
 | `user_id`, `created_at` | the user and the time |
@@ -96,7 +106,7 @@ to show field-by-field **before → after**.
 | DELETE | `/:entity/:id` | manage |
 | POST | `/:entity/import` — `{ file: { name, data } }` | manage → `{ rows, inserted, updated, skipped[], sheet }` |
 
-`:entity` is one of `hubs`, `kota-wilayah` or `kodepos`. Code:
+`:entity` is one of `hubs`, `kota-wilayah`, `kodepos`, `wilayah`, `cust-id` or `wilayah-kota` (the last two filter by `?wilayahId=`; `/meta` also returns `masterWilayah: [{ id, name }]`). Code:
 `server/routes/masterData.js`, `server/masterData/{service,audit}.js`,
 `src/views/MasterDataView.vue`, `src/components/masterData/*`,
 `src/lib/masterData.ts`.
@@ -121,3 +131,46 @@ to show field-by-field **before → after**.
 - `node tests/e2e-master-data.mjs` (Node ≥ 22, Chrome, built app). It covers
   the sidebar, the read-only loader cards and links, create / edit / delete
   through the UI, the audit tab with before → after, and the Indonesian UI.
+
+## Wilayah master (migration 014)
+
+`master_wilayah` ← `master_cust_id` / `master_wilayah_kota` (FK `wilayah_id`).
+The 3PL Loader form picks a **wilayah** and one of **its kota**; the server
+resolves everything else from these tables on every run:
+
+| Output | Rule |
+|---|---|
+| Cust ID Non-COD (N) / COD (Y) | `master_cust_id` of the wilayah — read-only in the form, never taken from the request |
+| `CUSTOMER ID` (JNE) | Y → COD id, N → Non-COD id (numeric) |
+| `KOTA PENGIRIM` (JNE) | the kota's `kota_pengirim` when set (migration 015); otherwise empty for Tasikmalaya (name or code `TASIK`, case-insensitive), else the wilayah name |
+| `NAMA PENGIRIM` (JNE) | `<nama_pengirim_base> <kota>`, spaces collapsed (e.g. `SICEPAT TASIKMALAYA Sukaraja`) |
+| kodepos lookup scope | `kodepos_wilayah` (e.g. `TASIK`) |
+
+Seed: Subang (`SUBANG`, N 82220303 / Y 82220300: Kalijati, Kartini, Subang
+Barat), Tasikmalaya (`TASIK`, N 82191603 / Y 82191600: Sukaraja — alias
+*sukareja* —, Ciamis, Banjar, Singaparna, Pangandaran, Mangkubumi), Sukabumi
+(`SUKABUMI`, N 82221700 / Y 82221701: Nyalindung, Sagaranten, Jampang,
+Parungkuda, Pelabuhan), Garut (`GARUT`, N 81706800 / Y 81706801: Kota Garut).
+
+```bash
+mysql -u <user> -p <db> < database/migrations/014_master_wilayah.sql
+# XAMPP: C:\xampp\mysql\bin\mysql.exe -u root <db> < database\migrations\014_master_wilayah.sql
+# rollback: database/migrations/014_rollback.sql
+```
+
+Idempotent (re-running never overwrites values edited in the app); requires
+001 and 010.
+
+**Migration 015** adds `master_wilayah_kota.kota_pengirim` and fills it for
+Tasikmalaya only where empty: Mangkubumi, Singaparna, Sukaraja (alias
+*sukareja*) → `Tasikmalaya`; Ciamis → `Ciamis`. Banjar, Pangandaran and any
+new kota stay empty → KOTA PENGIRIM empty. Edit the value per kota in
+**Master Data → Kota per wilayah** (audited). NAMA PENGIRIM is unaffected (always
+`<base> <kota name>`).
+
+```bash
+mysql -u <user> -p <db> < database/migrations/015_kota_pengirim.sql
+# rollback: database/migrations/015_rollback.sql
+``` Tests: `tests/test-wilayah.js` (in `npm test`),
+`tests/live-wilayah.test.js` (server + DB), `tests/e2e-loader.mjs` and
+`tests/e2e-master-data.mjs` (browser).

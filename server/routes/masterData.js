@@ -13,7 +13,9 @@
  *   DELETE /:entity/:id                master_data.manage  delete
  *   POST   /:entity/import             master_data.manage  { file: { name, data(base64) } }
  *
- *   :entity = hubs | kota-wilayah | kodepos
+ *   :entity = hubs | kota-wilayah | kodepos | wilayah | cust-id | wilayah-kota
+ *   (wilayah / cust-id / wilayah-kota: migration 014, FK wilayah_id; no import;
+ *    cust-id + wilayah-kota filter by ?wilayahId)
  *
  * Every mutation writes an audit row (master_data.create|update|delete|import)
  * with before/after snapshots — see server/masterData/audit.js. The 3PL
@@ -30,7 +32,7 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 function fail(res, err) {
   if (md.isMissingTable(err)) {
-    return res.status(503).json({ ok: false, code: "TABLE_MISSING", message: "A reference table is missing. Run database migrations 010–013." });
+    return res.status(503).json({ ok: false, code: "TABLE_MISSING", message: "A reference table is missing. Run database migrations 010–014." });
   }
   const status = err.status && err.status < 500 ? err.status : 500;
   if (status >= 500) console.error("[master-data]", err.dbMessage || err.message);
@@ -63,7 +65,12 @@ router.get("/meta", async (_req, res) => {
     return res.json({
       ok: true,
       wilayah: await md.knownWilayah(),
-      entities: Object.entries(md.ENTITIES).map(([key, e]) => ({ key, entityType: e.entityType })),
+      // master_wilayah choices (Cust ID / kota forms + filters). Empty before migration 014.
+      masterWilayah: await md.masterWilayahOptions().catch((err) => {
+        if (md.isMissingTable(err)) return [];
+        throw err;
+      }),
+      entities: Object.entries(md.ENTITIES).map(([key, e]) => ({ key, entityType: e.entityType, importable: e.importable !== false })),
     });
   } catch (err) {
     return fail(res, err);

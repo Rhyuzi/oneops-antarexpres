@@ -18,6 +18,17 @@
 const XLSX = require("xlsx");
 const ExcelJS = require("exceljs");
 const { LoaderInputError, normalizeResi } = require("./transform");
+const { findDuplicateResi, summarizeDuplicates } = require("./duplicates");
+
+/**
+ * "Resi double" rows: soft red fill + dark red text (Excel's "Bad" cell
+ * style), red borders, bold resi. Clearly visible, still readable/printable.
+ */
+const DUPLICATE_STYLE = {
+  fill: "FFFFC7CE",
+  font: "FF9C0006",
+  border: "FFE06666",
+};
 
 const FONT = { name: "Titillium Web", size: 9 };
 const THIN = { style: "thin" };
@@ -99,7 +110,9 @@ function readRechecked(buffer, label) {
     }
     map.set(key, phone);
   }
-  return { map, sheetName: table.sheetName, rows: table.rows.length, duplicates };
+  // Same detection as the template (hidden spaces etc.), with Excel row numbers.
+  const duplicateResi = summarizeDuplicates(findDuplicateResi(table));
+  return { map, sheetName: table.sheetName, rows: table.rows.length, duplicates, duplicateResi };
 }
 
 // Header groups shared by the loader layout and the JNE layout.
@@ -149,7 +162,15 @@ const SPACER_WIDTH = 3;
  * @param {string}   [sheet.freezeAfter]    freeze row 1 + every column up to this header
  * @param {boolean}  [sheet.autoFilter]     AutoFilter on the header row (A1 … last column)
  */
-function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFills = {}, spacerColumns = [], freezeAfter = null, autoFilter = false }) {
+function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFills = {}, spacerColumns = [], freezeAfter = null, autoFilter = false, highlightRows = null, emphasizeColumns = [], rowNotes = null }) {
+  // rowNotes: Map(0-based row index → text) — the issue reason, attached as a
+  // cell note to the first emphasized column (the resi) of that row.
+  // highlightRows: 0-based data row indexes painted with DUPLICATE_STYLE;
+  // emphasizeColumns: headers whose cell is also bold on those rows (the resi).
+  const highlight = highlightRows instanceof Set ? highlightRows : new Set(highlightRows || []);
+  const emphasize = new Set(emphasizeColumns);
+  const redSide = { style: "thin", color: { argb: DUPLICATE_STYLE.border } };
+  const RED_BORDER = { top: redSide, left: redSide, bottom: redSide, right: redSide };
   const ws = wb.addWorksheet(name);
   const spacers = new Set(spacerColumns);
 
@@ -177,6 +198,14 @@ function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFill
       cell.value = cellValue(header, raw);
       cell.font = FONT;
       cell.border = BORDER;
+      if (rowNotes && rowNotes.has(i) && header === emphasizeColumns[0]) {
+        cell.note = { texts: [{ text: rowNotes.get(i) }] };
+      }
+      if (highlight.has(i) && !spacers.has(header)) {
+        cell.fill = solid(DUPLICATE_STYLE.fill);
+        cell.font = { ...FONT, color: { argb: DUPLICATE_STYLE.font }, bold: emphasize.has(header) };
+        cell.border = RED_BORDER;
+      }
       if (typeof cell.value === "number" || cell.value instanceof Date) {
         // Padded ids keep the digits as read ("004689…" → format 000000000000).
         cell.numFmt = formatFor(header, PADDED_IDS.has(norm(header)) ? String(raw) : cell.value);
@@ -231,4 +260,5 @@ async function writeWorkbook(sheets) {
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-module.exports = { readTable, readRechecked, writeWorkbook, cellValue, formatFor, columnLetter };
+module.exports = {
+  DUPLICATE_STYLE, readTable, readRechecked, writeWorkbook, cellValue, formatFor, columnLetter };

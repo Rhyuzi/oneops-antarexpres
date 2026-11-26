@@ -450,7 +450,8 @@ test("warnings: duplicate/empty Resi, kecamatan missing/ambiguous, unknown COD",
   const r = precheckTemplate({ headers: SYNTH.headers, rows }, { lookupKodepos: buildKodeposLookup(REF) });
   assert.strictEqual(r.ok, true);
   const by = Object.fromEntries(r.warnings.map((w) => [w.code, w]));
-  assert.deepStrictEqual(by.DUPLICATE_RESI.items, [{ resi: "3", count: 2 }]);
+  // Shown as the first occurrence is written (leading zeros kept), with its Excel rows.
+  assert.deepStrictEqual(by.DUPLICATE_RESI.items, [{ resi: "000000000003", count: 2, rows: [2, 6] }]);
   assert.strictEqual(by.EMPTY_RESI.count, 1);
   assert.deepStrictEqual(by.KECAMATAN_MISSING.items, [{ kecamatan: "Nowhere", count: 1 }]);
   assert.strictEqual(by.KECAMATAN_AMBIGUOUS.items[0].kecamatan, "Pabuaran");

@@ -21,6 +21,7 @@ const XLSX = require("xlsx");
 const ExcelJS = require("exceljs");
 const { config } = require("../server/config");
 const { query, pool } = require("../server/db");
+const { wilayahIds } = require("./wilayah-ids");
 
 const BASE = new URL(process.env.BASE_URL || `http://localhost:${config.port}`);
 const MOCK_PORT = Number(process.env.MOCK_SICEPAT_PORT || 39190);
@@ -126,7 +127,8 @@ async function main() {
   const S = await login("superadmin");
   const tplRows = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { defval: "" });
   const resis = tplRows.map((r) => String(r.Resi));
-  const baseBody = { template: file(TEMPLATE), custIdCod: "82220300", custIdNonCod: "82220303", sicepatUserId: "sicepat-user-7" };
+  const ids = await wilayahIds(query); // Subang / Kalijati — Cust IDs come from Master Data
+  const baseBody = { template: file(TEMPLATE), ...ids, sicepatUserId: "sicepat-user-7" };
 
   // Temporary role/user: loader.view + loader.run but NOT loader.recheck / Master Data.
   const roleName = `e2e_loaderrun_${SUFFIX}`;
@@ -149,7 +151,7 @@ async function main() {
       assert.strictEqual((await request("POST", "/api/loader/settings/kota-wilayah", { cookie: L, body: { kota: "Kab. X", wilayah: "TASIK" } })).status, 404); // removed: read-only
       assert.strictEqual((await request("POST", "/api/master-data/kota-wilayah", { cookie: L, body: { kota: "Kab. X", wilayah: "TASIK" } })).status, 403);
       assert.strictEqual((await request("GET", "/api/loader/settings/kota-wilayah", { cookie: L })).status, 200);
-      assert.strictEqual((await request("POST", "/api/loader/precheck", { cookie: L, body: { template: baseBody.template } })).status, 200);
+      assert.strictEqual((await request("POST", "/api/loader/precheck", { cookie: L, body: { template: baseBody.template, wilayahId: ids.wilayahId } })).status, 200);
     });
 
     await test("missing rechecker token → 400, nothing sent to SiCepat", async () => {
@@ -163,7 +165,7 @@ async function main() {
     await test("pre-check: BANJAR resolves Purwadadi through the seeded mapping; no API call", async () => {
       if (!fs.existsSync(BANJAR)) return;
       const before = mock.calls.length;
-      const r = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: file(BANJAR) } });
+      const r = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: file(BANJAR), wilayahId: (await wilayahIds(query, "tasikmalaya", "banjar")).wilayahId } });
       assert.strictEqual(r.status, 200, JSON.stringify(r.json));
       assert.deepStrictEqual(r.json.precheck.warnings, []);
       assert.deepStrictEqual(r.json.precheck.counts, { rows: 209, uniqueResi: 209, cod: 56, nonCod: 153 });
@@ -286,7 +288,7 @@ async function main() {
     await test("history: API + file jobs listed with counts only (no phones/tokens in DB)", async () => {
       const f = await request("POST", "/api/loader/process", {
         cookie: S,
-        body: { template: file(TEMPLATE), rechecked: file(TEMPLATE), custIdCod: "82220300", custIdNonCod: "82220303" },
+        body: { template: file(TEMPLATE), rechecked: file(TEMPLATE), ...ids },
       });
       assert.strictEqual(f.status, 200, JSON.stringify(f.json));
       assert.ok(f.json.jobId);

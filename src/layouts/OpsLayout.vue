@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Building2,
   Database,
+  Hash,
+  Landmark,
+  Map as MapIcon,
   History,
   Mailbox,
   MapPinned,
@@ -82,6 +85,9 @@ const navGroups = computed(() => {
       { name: 'master-data-hubs', label: 'nav.mdHubs', icon: Building2, permission: 'master_data.view' },
       { name: 'master-data-kota-wilayah', label: 'nav.mdKotaWilayah', icon: MapPinned, permission: 'master_data.view' },
       { name: 'master-data-kodepos', label: 'nav.mdKodepos', icon: Mailbox, permission: 'master_data.view' },
+      { name: 'master-data-wilayah', label: 'nav.mdWilayah', icon: Landmark, permission: 'master_data.view' },
+      { name: 'master-data-cust-id', label: 'nav.mdCustId', icon: Hash, permission: 'master_data.view' },
+      { name: 'master-data-wilayah-kota', label: 'nav.mdWilayahKota', icon: MapIcon, permission: 'master_data.view' },
       { name: 'master-data-audit', label: 'nav.mdAudit', icon: History, permission: 'master_data.audit' },
     ]
     groups.push({ label: 'nav.masterData', items: mdItems })

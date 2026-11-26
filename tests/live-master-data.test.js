@@ -22,6 +22,7 @@ const XLSX = require("xlsx");
 const ExcelJS = require("exceljs");
 const { config } = require("../server/config");
 const { query, pool } = require("../server/db");
+const { wilayahIds } = require("./wilayah-ids");
 const { JNE_HEADERS } = require("../server/loader/jne");
 
 const BASE = new URL(process.env.BASE_URL || `http://localhost:${config.port}`);
@@ -233,7 +234,7 @@ async function main() {
 
     await test("Master Data changes reach the 3PL Loader on the next run (no restart): KOTA PENERIMA + KODE POS", async () => {
       const tpl = fileOf(TEMPLATE);
-      const body = { template: tpl, rechecked: tpl, custIdCod: "82220300", custIdNonCod: "82220303" };
+      const body = { template: tpl, rechecked: tpl, ...(await wilayahIds(query)) };
       const [hub] = await query("SELECT id, hub, analytic_code, city, dest_code, hub_type, kota_penerima, nama_pengirim, source FROM loader_hub_kota WHERE hub = 'Subang Sukamelang LM'");
       const [kp] = await query("SELECT id, wilayah, kecamatan, kodepos FROM kebutuhan_loader WHERE wilayah = 'SUBANG' AND kecamatan = 'Cibogo'");
       cleanup.push(async () => {

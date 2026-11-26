@@ -9,6 +9,11 @@
  *   hubs          loader_hub_kota      gerai / HUB → KOTA PENERIMA   entity gerai_kota_mapping
  *   kota-wilayah  loader_kota_wilayah  Kota_Tujuan → wilayah         entity kota_wilayah_mapping
  *   kodepos       kebutuhan_loader     kecamatan → kodepos           entity kodepos_reference
+ *   wilayah       master_wilayah       wilayah (+ kodepos code, NAMA PENGIRIM base)   entity master_wilayah
+ *   cust-id       master_cust_id       wilayah_id FK → Cust ID N / Y                  entity master_cust_id
+ *   wilayah-kota  master_wilayah_kota  wilayah_id FK → breakdown kota (+ aliases)     entity master_wilayah_kota
+ * (the last three: migration 014; deleting a wilayah that still has cust IDs
+ * or kota is refused by the FK → 409).
  *
  * Validation is pure (validate*), so it is unit-tested without a DB
  * (tests/test-master-data.js). Auditing is done by the route layer with the
@@ -86,6 +91,70 @@ function validateKodepos(input) {
   if (!/^\d{5}$/.test(kodepos)) throw invalid("Kodepos must be 5 digits.", "KODEPOS_INVALID");
   return { wilayah, kecamatan, kodepos };
 }
+
+/** master_wilayah row. kodepos_wilayah must be a wilayah of the kodepos reference (or empty). */
+function validateWilayah(input, knownKodeposWilayah) {
+  const i = input || {};
+  const name = text(i.name, 100);
+  if (name.length < 3 || !kotaKey(name)) throw invalid("Wilayah name must be at least 3 characters.", "WILAYAH_NAME_INVALID");
+  const code = text(i.kodepos_wilayah, 100).toUpperCase();
+  let kodepos = null;
+  if (code) {
+    kodepos = (knownKodeposWilayah || []).find((w) => kotaKey(w) === kotaKey(code)) || null;
+    if (!kodepos) throw invalid("Unknown wilayah — it must exist in the kodepos reference.", "WILAYAH_UNKNOWN");
+  }
+  return { name, name_key: kotaKey(name), kodepos_wilayah: kodepos, nama_pengirim_base: orNull(text(i.nama_pengirim_base)) };
+}
+
+const CUST_ID_RE = /^\d{1,15}$/;
+const wilayahIdOf = (v) => {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw invalid("Choose a wilayah.", "WILAYAH_ID_REQUIRED");
+  return n;
+};
+const digits = (v) => String(v === null || v === undefined ? "" : v).trim();
+
+/** master_cust_id row: numeric Cust IDs (≤ 15 digits), N and Y different. */
+function validateCustIdRow(input) {
+  const i = input || {};
+  const wilayah_id = wilayahIdOf(i.wilayah_id);
+  const nonCod = digits(i.cust_id_non_cod);
+  const cod = digits(i.cust_id_cod);
+  if (!CUST_ID_RE.test(nonCod) || !CUST_ID_RE.test(cod) || Number(nonCod) === 0 || Number(cod) === 0) {
+    throw invalid("Cust ID must be a number (digits only, max 15).", "CUST_ID_INVALID");
+  }
+  if (nonCod === cod) throw invalid("The COD and Non-COD cust IDs must be different.", "CUST_ID_SAME");
+  return { wilayah_id, cust_id_non_cod: nonCod, cust_id_cod: cod };
+}
+
+/** master_wilayah_kota row. Aliases: comma-separated search names ("sukareja"). */
+function validateWilayahKota(input) {
+  const i = input || {};
+  const wilayah_id = wilayahIdOf(i.wilayah_id);
+  const kota = text(i.kota, 100);
+  if (kota.length < 2 || !kotaKey(kota)) throw invalid("Kota must be at least 2 characters.", "KOTA_INVALID");
+  const seen = new Set();
+  const aliases = String(i.aliases || "")
+    .split(/[,;]/)
+    .map((a) => text(a, 60))
+    .filter((a) => a && !seen.has(a.toLowerCase()) && seen.add(a.toLowerCase()))
+    .join(", ");
+  if (aliases.length > 255) throw invalid("Aliases are too long (max 255 characters).", "ALIASES_TOO_LONG");
+  // KOTA PENGIRIM for this kota (migration 015); empty = wilayah rule.
+  const kota_pengirim = orNull(text(i.kota_pengirim, 100));
+  return { wilayah_id, kota, kota_key: kotaKey(kota), aliases: orNull(aliases), kota_pengirim };
+}
+
+async function assertWilayahExists(id) {
+  const [row] = await query("SELECT id FROM master_wilayah WHERE id = ?", [id]);
+  if (!row) throw invalid("The selected wilayah does not exist.", "WILAYAH_ID_UNKNOWN");
+}
+
+const noImport = async () => {
+  throw invalid("Excel import is not available for this data.", "IMPORT_UNSUPPORTED");
+};
+const idOrNull = (v) => (v === undefined || v === null ? null : Number(v));
+const strOrNull = (v) => (v === undefined || v === null ? null : String(v));
 
 // --- entity definitions --------------------------------------------------------------------
 
@@ -196,6 +265,92 @@ const ENTITIES = {
   },
 };
 
+ENTITIES.wilayah = {
+  entityType: "master_wilayah",
+  label: "wilayah",
+  table: "master_wilayah",
+  importable: false,
+  select: `SELECT x.id, x.name, x.kodepos_wilayah, x.nama_pengirim_base, c.cust_id_non_cod, c.cust_id_cod,
+                  (SELECT COUNT(*) FROM master_wilayah_kota k WHERE k.wilayah_id = x.id) AS kota_count,
+                  x.updated_at, u.username AS updated_by
+             FROM master_wilayah x
+             LEFT JOIN master_cust_id c ON c.wilayah_id = x.id
+             LEFT JOIN users u ON u.id = x.updated_by`,
+  search: ["x.name", "x.kodepos_wilayah", "x.nama_pengirim_base"],
+  filters: {},
+  order: "x.name",
+  snapshot: (r) => pick(r, ["name", "kodepos_wilayah", "nama_pengirim_base"]),
+  recordKey: (r) => r.name,
+  async prepare(input) {
+    return validateWilayah(input, await knownWilayah());
+  },
+  importFile: noImport,
+};
+
+ENTITIES["cust-id"] = {
+  entityType: "master_cust_id",
+  label: "Cust ID per wilayah",
+  table: "master_cust_id",
+  importable: false,
+  select: `SELECT x.id, x.wilayah_id, w.name AS wilayah_name, x.cust_id_non_cod, x.cust_id_cod,
+                  x.updated_at, u.username AS updated_by
+             FROM master_cust_id x
+             JOIN master_wilayah w ON w.id = x.wilayah_id
+             LEFT JOIN users u ON u.id = x.updated_by`,
+  countFrom: "master_cust_id x JOIN master_wilayah w ON w.id = x.wilayah_id",
+  search: ["w.name", "x.cust_id_non_cod", "x.cust_id_cod"],
+  filters: { wilayahId: (v) => ({ sql: "x.wilayah_id = ?", params: [Number(v) || 0] }) },
+  order: "w.name",
+  snapshot: (r) => ({
+    wilayah_id: idOrNull(r.wilayah_id),
+    wilayah: r.wilayah_name || null,
+    cust_id_non_cod: strOrNull(r.cust_id_non_cod),
+    cust_id_cod: strOrNull(r.cust_id_cod),
+  }),
+  recordKey: (r) => r.wilayah_name,
+  async prepare(input) {
+    const data = validateCustIdRow(input);
+    await assertWilayahExists(data.wilayah_id);
+    return data;
+  },
+  importFile: noImport,
+};
+
+ENTITIES["wilayah-kota"] = {
+  entityType: "master_wilayah_kota",
+  label: "kota per wilayah",
+  table: "master_wilayah_kota",
+  importable: false,
+  select: `SELECT x.id, x.wilayah_id, w.name AS wilayah_name, x.kota, x.aliases, x.kota_pengirim,
+                  x.updated_at, u.username AS updated_by
+             FROM master_wilayah_kota x
+             JOIN master_wilayah w ON w.id = x.wilayah_id
+             LEFT JOIN users u ON u.id = x.updated_by`,
+  countFrom: "master_wilayah_kota x JOIN master_wilayah w ON w.id = x.wilayah_id",
+  search: ["x.kota", "x.aliases", "w.name", "x.kota_pengirim"],
+  filters: { wilayahId: (v) => ({ sql: "x.wilayah_id = ?", params: [Number(v) || 0] }) },
+  order: "w.name, x.kota",
+  snapshot: (r) => ({
+    wilayah_id: idOrNull(r.wilayah_id),
+    wilayah: r.wilayah_name || null,
+    kota: r.kota === undefined ? null : r.kota,
+    aliases: r.aliases === undefined ? null : r.aliases,
+    kota_pengirim: r.kota_pengirim === undefined ? null : r.kota_pengirim,
+  }),
+  recordKey: (r) => `${r.wilayah_name} / ${r.kota}`,
+  async prepare(input) {
+    const data = validateWilayahKota(input);
+    await assertWilayahExists(data.wilayah_id);
+    return data;
+  },
+  importFile: noImport,
+};
+
+/** Master wilayah choices for the Cust ID / kota forms and filters. */
+async function masterWilayahOptions() {
+  return (await query("SELECT id, name FROM master_wilayah ORDER BY name")).map((r) => ({ id: Number(r.id), name: r.name }));
+}
+
 function pick(row, keys) {
   const out = {};
   for (const k of keys) out[k] = row[k] === undefined ? null : row[k];
@@ -238,7 +393,7 @@ async function list(name, q = {}) {
   }
   const whereSql = where.length ? ` WHERE ${where.join(" AND ")}` : "";
   const { page, pageSize } = pageParams(q);
-  const [{ n }] = await query(`SELECT COUNT(*) AS n FROM ${e.table} x${whereSql}`, params);
+  const [{ n }] = await query(`SELECT COUNT(*) AS n FROM ${e.countFrom || `${e.table} x`}${whereSql}`, params);
   const rows = await query(`${e.select}${whereSql} ORDER BY ${e.order} LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]);
   return { rows, total: Number(n), page, pageSize };
 }
@@ -250,6 +405,24 @@ async function getRow(e, id) {
 
 function duplicate(err) {
   return err && (err.code === "ER_DUP_ENTRY" || err.errno === 1062);
+}
+/** FK: a child row (cust ID / kota) still points at the wilayah. */
+function referenced(err) {
+  return err && (err.code === "ER_ROW_IS_REFERENCED_2" || err.errno === 1451);
+}
+/** FK: the wilayah_id does not exist (deleted concurrently). */
+function missingParent(err) {
+  return err && (err.code === "ER_NO_REFERENCED_ROW_2" || err.errno === 1452);
+}
+/** CHECK constraint (Cust ID N = Y). */
+function checkFailed(err) {
+  return err && (err.code === "ER_CONSTRAINT_FAILED" || err.errno === 4025);
+}
+function mapWriteError(err) {
+  if (duplicate(err)) return new MasterDataError("A record with the same key already exists.", 409, "DUPLICATE");
+  if (missingParent(err)) return invalid("The selected wilayah does not exist.", "WILAYAH_ID_UNKNOWN");
+  if (checkFailed(err)) return invalid("The COD and Non-COD cust IDs must be different.", "CUST_ID_SAME");
+  return err;
 }
 
 /** @returns {{ id, before: null, after, recordKey }} */
@@ -263,8 +436,7 @@ async function create(name, input, userId) {
   try {
     res = await query(`INSERT INTO ${e.table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, values);
   } catch (err) {
-    if (duplicate(err)) throw new MasterDataError("A record with the same key already exists.", 409, "DUPLICATE");
-    throw err;
+    throw mapWriteError(err);
   }
   const row = await getRow(e, res.insertId);
   return { id: Number(res.insertId), before: null, after: e.snapshot(row), recordKey: e.recordKey(row), row };
@@ -285,8 +457,7 @@ async function update(name, id, input, userId) {
   try {
     await query(`UPDATE ${e.table} SET ${sets.join(", ")} WHERE id = ?`, [...values, Number(id)]);
   } catch (err) {
-    if (duplicate(err)) throw new MasterDataError("A record with the same key already exists.", 409, "DUPLICATE");
-    throw err;
+    throw mapWriteError(err);
   }
   const row = await getRow(e, id);
   return { id: Number(id), before: e.snapshot(current), after: e.snapshot(row), recordKey: e.recordKey(row), row };
@@ -297,7 +468,14 @@ async function remove(name, id) {
   const e = entityOf(name);
   const current = await getRow(e, id);
   if (!current) throw new MasterDataError("Record not found.", 404, "NOT_FOUND");
-  await query(`DELETE FROM ${e.table} WHERE id = ?`, [Number(id)]);
+  try {
+    await query(`DELETE FROM ${e.table} WHERE id = ?`, [Number(id)]);
+  } catch (err) {
+    if (referenced(err)) {
+      throw new MasterDataError("This wilayah still has cust IDs or kota. Delete those first.", 409, "WILAYAH_IN_USE");
+    }
+    throw err;
+  }
   return { id: Number(id), before: e.snapshot(current), after: null, recordKey: e.recordKey(current) };
 }
 
@@ -315,6 +493,10 @@ module.exports = {
   validateHub,
   validateKotaWilayah,
   validateKodepos,
+  validateWilayah,
+  validateCustIdRow,
+  validateWilayahKota,
+  masterWilayahOptions,
   entityOf,
   knownWilayah,
   pageParams,

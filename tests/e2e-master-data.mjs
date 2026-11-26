@@ -19,6 +19,8 @@ const CHROME = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Applic
 const PORT = 9342
 const SUFFIX = Date.now().toString(36)
 const KOTA = `Kab. Uitest ${SUFFIX}`
+// Kota of the wilayah-master test: must NOT contain SUFFIX (the audit test searches SUFFIX).
+const UIKOTA = `Uikota ${[...SUFFIX].reverse().join('')}q`
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const profile = mkdtempSync(join(tmpdir(), 'oneops-md-e2e-'))
 const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=1400,1000', 'about:blank'], { stdio: 'ignore' })
@@ -100,6 +102,38 @@ async function main() {
     await waitFor(`[...document.querySelectorAll('tbody tr')].some((r) => r.innerText.includes(${JSON.stringify(KOTA)}) && r.innerText.includes('SUBANG'))`, 'row shows SUBANG')
     await ev(`[...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === ${JSON.stringify(`Delete — ${KOTA}`)}).click()`)
     await waitFor(`document.body.innerText.includes('deleted.') && document.body.innerText.includes('0 record(s)')`, 'deleted')
+  })
+
+  await test('Wilayah master tabs: Cust ID list, kota filtered by wilayah, add kota via the wilayah dropdown (FK), no import', async () => {
+    const nav = await ev(`[...document.querySelectorAll('aside a')].map((a) => a.innerText.trim())`)
+    for (const s of ['Wilayah', 'Cust ID per wilayah', 'Kota per wilayah']) assert(nav.includes(s), `nav item "${s}" missing`)
+    await go('/ops/master-data/cust-id', `document.body.innerText.includes('82191603')`, 'cust id tab')
+    let t = await text()
+    for (const s of ['82191600', '81706800', '82220303', '82221701']) assert(t.includes(s), `cust id ${s}`)
+    assert(!t.includes('Import Excel'), 'no import for cust ids')
+    await go('/ops/master-data/wilayah-kota', `document.body.innerText.includes('Sukaraja')`, 'kota tab')
+    await ev(`(() => { const el = [...document.querySelectorAll('select')].find((s) => s.getAttribute('aria-label') === 'Wilayah'); const o = [...el.options].find((x) => x.text === 'Subang'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, o.value); el.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+    await waitFor(`document.body.innerText.includes('3 record(s)') && !document.body.innerText.includes('Sukaraja')`, 'filtered to Subang')
+    t = await text()
+    for (const s of ['Kalijati', 'Kartini', 'Subang Barat']) assert(t.includes(s), `Subang kota ${s}`)
+    await clickText('Add')
+    await waitFor(`!!document.querySelector('#md-wilayah_id')`, 'kota form')
+    const options = await ev(`[...document.querySelector('#md-wilayah_id').options].filter((o) => o.value).map((o) => o.text)`)
+    assert(['Garut', 'Subang', 'Sukabumi', 'Tasikmalaya'].every((w) => options.includes(w)), `wilayah dropdown ${options}`)
+    await ev(`(() => { const el = document.querySelector('#md-wilayah_id'); const o = [...el.options].find((x) => x.text === 'Subang'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, o.value); el.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+    await type('#md-kota', UIKOTA)
+    await type('#md-aliases', 'uikotaalias')
+    await ev(`document.querySelector('form[role=dialog]').requestSubmit()`)
+    await waitFor(`document.body.innerText.includes('Record created.') && document.body.innerText.includes('4 record(s)')`, 'kota created')
+    await type('input[aria-label="Search…"]', 'uikotaalias')
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(UIKOTA)}) && document.body.innerText.includes('1 record(s)')`, 'alias search')
+    await ev(`[...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === ${JSON.stringify(`Delete — Subang / ${UIKOTA}`)}).click()`)
+    await waitFor(`document.body.innerText.includes('deleted.') && document.body.innerText.includes('0 record(s)')`, 'kota deleted')
+    // Deleting a wilayah that still has cust IDs / kota is refused (FK RESTRICT).
+    await go('/ops/master-data/wilayah', `document.body.innerText.includes('Tasikmalaya')`, 'wilayah tab')
+    await ev(`[...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Delete — Garut').click()`)
+    await waitFor(`document.body.innerText.includes('This wilayah still has cust IDs or kota. Delete those first.')`, 'FK refusal shown')
+    await shot('wilayah')
   })
 
   await test('Master Data audit trail tab: CREATE / UPDATE / DELETE with before → after', async () => {

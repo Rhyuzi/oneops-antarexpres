@@ -1,13 +1,14 @@
 <script setup lang="ts">
 /**
  * Master Data — the only place where the 3PL Loader reference data changes:
- * gerai/HUB → KOTA PENERIMA, Kota_Tujuan → wilayah, kodepos reference, plus
+ * gerai/HUB → KOTA PENERIMA, Kota_Tujuan → wilayah, kodepos reference, the
+ * wilayah master (wilayah, Cust ID per wilayah, kota per wilayah), plus
  * the Master Data audit trail. One route per tab (sidebar items); the tab
  * comes from route.meta.tab.
  */
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Building2, Database, History, MapPinned } from 'lucide-vue-next'
+import { Building2, Database, Hash, History, Landmark, Map as MapIcon, MapPinned } from 'lucide-vue-next'
 import MasterDataTable from '../components/masterData/MasterDataTable.vue'
 import MasterDataAudit from '../components/masterData/MasterDataAudit.vue'
 import { authStore } from '../stores/auth'
@@ -23,6 +24,10 @@ const tabs = computed(() => {
     { name: 'master-data-hubs', tab: 'hubs', label: 'nav.mdHubs', icon: Building2 },
     { name: 'master-data-kota-wilayah', tab: 'kota-wilayah', label: 'nav.mdKotaWilayah', icon: MapPinned },
     { name: 'master-data-kodepos', tab: 'kodepos', label: 'nav.mdKodepos', icon: Database },
+    // Wilayah master (migration 014): wilayah ← Cust ID / kota (FK wilayah_id).
+    { name: 'master-data-wilayah', tab: 'wilayah', label: 'nav.mdWilayah', icon: Landmark },
+    { name: 'master-data-cust-id', tab: 'cust-id', label: 'nav.mdCustId', icon: Hash },
+    { name: 'master-data-wilayah-kota', tab: 'wilayah-kota', label: 'nav.mdWilayahKota', icon: MapIcon },
   ]
   if (authStore.can('master_data.audit')) list.push({ name: 'master-data-audit', tab: 'audit', label: 'nav.mdAudit', icon: History })
   return list

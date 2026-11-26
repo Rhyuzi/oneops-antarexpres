@@ -20,6 +20,8 @@ const XLSX = require("xlsx");
 const ExcelJS = require("exceljs");
 const { config } = require("../server/config");
 const { query, pool } = require("../server/db");
+const { wilayahIds: idsOf } = require("./wilayah-ids");
+const wilayahIds = (w, k) => idsOf(query, w, k);
 
 const BASE = new URL(process.env.BASE_URL || `http://localhost:${config.port}`);
 const COOKIE = config.session.cookieName;
@@ -83,7 +85,10 @@ async function main() {
   const tpl = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { defval: "" });
   const rechecked = xlsxFile("rechecked-from-template.xlsx", ["Resi", "Penerima", "No HP Penerima", "Kota tujuan"],
     tpl.map((r, i) => [Number(r.Resi), r.Penerima, i % 2 ? `0812${String(3000000 + i)}` : `62 0857${String(4000000 + i)}`, "Subang"]));
-  const goodBody = { template: file(TEMPLATE), rechecked, custIdCod: "82220300", custIdNonCod: "82220303" };
+  // Master Data ids (migration 014): the server reads the Cust IDs (Subang: N 82220303 / Y 82220300).
+  const ids = await wilayahIds();
+  const tasik = await wilayahIds("tasikmalaya", "sukaraja");
+  const goodBody = { template: file(TEMPLATE), rechecked, ...ids };
 
   await test("anonymous → 401, large body is never parsed before auth", async () => {
     assert.strictEqual((await request("GET", "/api/loader/reference/summary")).status, 401);
@@ -124,10 +129,12 @@ async function main() {
     assert.deepStrictEqual(s.json.rows.map((x) => `${x.wilayah}:${x.kodepos}`).sort(), ["SUBANG:41262", "SUKABUMI:43173"]);
   });
 
-  await test("validation: cust ids required/different, file type, unreadable file, missing columns", async () => {
+  await test("validation: wilayah/kota required + related, file type, unreadable file, missing columns", async () => {
     const cases = [
-      [{ ...goodBody, custIdCod: "" }, /cust IDs \(COD and Non-COD\) are required/],
-      [{ ...goodBody, custIdCod: "82220303" }, /must be different/],
+      [{ ...goodBody, wilayahId: undefined }, /Choose a wilayah/],
+      [{ ...goodBody, kotaId: undefined }, /Choose a kota/],
+      [{ ...goodBody, kotaId: tasik.kotaId }, /does not belong to the selected wilayah/],
+      [{ ...goodBody, wilayahId: 999999 }, /does not exist in Master Data/],
       [{ ...goodBody, template: undefined }, /template file is required/],
       [{ ...goodBody, template: { name: "x.csv", data: "YQ==" } }, /must be an \.xlsx or \.xls file/],
       [{ ...goodBody, template: { name: "x.xlsx", data: Buffer.from("not excel at all").toString("base64") } }, /could not be read as Excel|No sheet in/],
@@ -266,8 +273,51 @@ async function main() {
     assert.strictEqual(ws.getRow(2).getCell(JNE.JNE_HEADERS.indexOf("KOTA PENERIMA") + 1).value, "Kab. Subang");
   });
 
+  await test("resi double: pre-check + /process 409 with rows, confirmed run paints both rows red", async () => {
+    // The real template + one extra row repeating resi 1 with a hidden NBSP.
+    const aoa = XLSX.utils.sheet_to_json(XLSX.readFile(TEMPLATE).Sheets.Sheet1, { header: 1, defval: "" });
+    const ri = aoa[0].indexOf("Resi");
+    const dupRow = aoa[1].slice();
+    const dupResi = String(aoa[1][ri]).replace(/\D/g, "");
+    dupRow[ri] = ` ${dupResi} `;
+    const dupTemplate = xlsxFile("TEMPLATE 3PL - dup.xlsx", aoa[0], [...aoa.slice(1), dupRow], "Sheet1");
+    const lastRow = aoa.length + 1; // header = row 1, data rows 2 … aoa.length, extra row after them
+    const expected = { resi: dupResi, count: 2, rows: [2, lastRow] };
+
+    const pc = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: dupTemplate, wilayahId: ids.wilayahId } });
+    assert.strictEqual(pc.status, 200, JSON.stringify(pc.json));
+    const w = pc.json.precheck.warnings.find((x) => x.code === "DUPLICATE_RESI");
+    assert.deepStrictEqual(w && w.items, [expected]);
+
+    const body = { ...goodBody, template: dupTemplate };
+    const blocked = await request("POST", "/api/loader/process", { cookie: S, body });
+    assert.strictEqual(blocked.status, 409, JSON.stringify(blocked.json));
+    assert.strictEqual(blocked.json.code, "RESI_ISSUES");
+    assert.deepStrictEqual(blocked.json.details.duplicateResi, { groups: 1, rows: 2, items: [expected] });
+
+    const ok = await request("POST", "/api/loader/process", { cookie: S, body: { ...body, acknowledgeWarnings: true } });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.json));
+    assert.deepStrictEqual(ok.json.report.duplicateResi, { groups: 1, rows: 2, items: [expected], highlighted: 2 });
+    const dl = await request("GET", `/api/loader/download/${ok.json.download.id}`, { cookie: S });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(dl.buf);
+    const H = require("../server/loader/jne").JNE_HEADERS;
+    const ws = wb.worksheets[0];
+    assert.strictEqual(ws.rowCount, 121, "both copies kept (119 + 1 rows + header)");
+    const red = [];
+    ws.eachRow((row, n) => {
+      if (n === 1) return;
+      const c = row.getCell(H.indexOf("NO RESI SICEPAT") + 1);
+      if (c.fill && c.fill.fgColor && c.fill.fgColor.argb === "FFFFC7CE") red.push(String(c.value));
+    });
+    assert.deepStrictEqual(red, [Number(dupResi), Number(dupResi)].map(String), "exactly the two duplicate rows are red, resi cleaned");
+    const [job] = await query("SELECT summary FROM loader_jobs WHERE public_id = ?", [ok.json.jobId]);
+    const summary = typeof job.summary === "string" ? JSON.parse(job.summary) : job.summary;
+    assert.deepStrictEqual([summary.duplicateResi, summary.duplicateResiRows], [1, 2]);
+  });
+
   await test("pre-check notices: empty data + KOTA PENERIMA preview (no API call, non-blocking)", async () => {
-    const r = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: goodBody.template } });
+    const r = await request("POST", "/api/loader/precheck", { cookie: S, body: { template: goodBody.template, wilayahId: ids.wilayahId } });
     assert.strictEqual(r.status, 200, JSON.stringify(r.json));
     assert.ok(r.json.precheck.notices.empty);
     assert.strictEqual(r.json.precheck.notices.kotaPenerima.mapped + r.json.precheck.notices.kotaPenerima.fallback, 119);

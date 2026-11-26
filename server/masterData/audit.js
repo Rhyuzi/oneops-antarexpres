@@ -18,7 +18,10 @@ const { query } = require("../db");
 const { logAudit, normalizeRecord } = require("../audit");
 
 const ACTIONS = { CREATE: "master_data.create", UPDATE: "master_data.update", DELETE: "master_data.delete", IMPORT: "master_data.import" };
-const ENTITY_TYPES = ["gerai_kota_mapping", "kota_wilayah_mapping", "kodepos_reference"];
+const ENTITY_TYPES = [
+  "gerai_kota_mapping", "kota_wilayah_mapping", "kodepos_reference",
+  "master_wilayah", "master_cust_id", "master_wilayah_kota", // migration 014
+];
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 
