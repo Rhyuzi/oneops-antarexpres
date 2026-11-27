@@ -305,9 +305,10 @@ test("Sukabumi and Garut: KOTA PENGIRIM = wilayah name", async () => {
   const gar = await exportRows({ name: "Garut", kodepos_wilayah: "GARUT", nama_pengirim_base: null }, { kota: "Kota Garut" }, { nonCod: "81706800", cod: "81706801" });
   assert.deepStrictEqual([gar.rows[0]["KOTA PENGIRIM"], gar.rows[0]["NAMA PENGIRIM"]], ["Garut", "SICEPAT GARUT Kota Garut"]);
 });
-test("the export stays exactly the 34 Loader JNE columns", async () => {
+test("the export = the 34 Loader JNE columns + KETERANGAN ISSUE", async () => {
   const { report } = await exportRows(SUBANG, { kota: "Kartini" }, { nonCod: "82220303", cod: "82220300" });
-  assert.strictEqual(report.columns.length, 34);
+  assert.strictEqual(report.columns.length, 35);
+  assert.strictEqual(report.columns[34], "KETERANGAN ISSUE");
   assert.ok(report.columns.includes("KOTA PENGIRIM") && report.columns.includes("NAMA PENGIRIM"));
 });
 

@@ -135,6 +135,7 @@ function applyWeightRule(berat, beratAsli) {
 // One shared rule (server/recheck/phone.js) for the loader and the recheck
 // queues — see that file for the exact normalization.
 const { normalizePhone } = require("../recheck/phone");
+const { kodeposFromText } = require("./kodepos");
 
 /** Resi as matched between files: digits only, leading zeros ignored. */
 function normalizeResi(value) {
@@ -296,8 +297,12 @@ function transformTemplate(template, opts) {
     rows: sheet.rows.length,
     removedColumns: [],
     beratAsliPlacement: null,
-    weight: { conversion: convertWeight, normalized: 0, unchanged: 0, belowThreshold: 0, guardSkipped: 0, invalid: [] },
-    kodepos: { filled: 0, missing: [], ambiguous: [] },
+    // zeroToOne: Berat 0 or empty → 1 (minimum weight; not derived from Berat Asli).
+    weight: { conversion: convertWeight, normalized: 0, unchanged: 0, belowThreshold: 0, guardSkipped: 0, zeroToOne: 0, invalid: [] },
+    // filled = all rows with a kodepos; fromTemplate / fromAddress = how many of
+    // them came from the template's own kodepos column / a 5-digit kodepos in
+    // Alamat Penerima (instead of the kecamatan reference).
+    kodepos: { filled: 0, fromTemplate: 0, fromAddress: 0, missing: [], ambiguous: [] },
     phone: { fromRechecked: 0, notInRechecked: [], normalized: 0, invalid: [] },
     nilaiBarangDefaulted: 0,
     cod: 0,
@@ -367,6 +372,14 @@ function transformTemplate(template, opts) {
     const bi = c("Berat");
     const ai = c("Berat Asli");
     for (const row of sheet.rows) {
+      // Minimum weight: Berat 0 (or empty) becomes 1 — with the switch on or
+      // off. The only case where Berat goes UP; it never comes from Berat Asli,
+      // so the "Berat Asli > Berat" guard is not involved.
+      if (isEmptyCell(row[bi]) || toNumber(row[bi]) === 0) {
+        row[bi] = 1;
+        report.weight.zeroToOne++;
+        continue;
+      }
       if (!convertWeight) {
         const b = toNumber(row[bi]);
         if (!Number.isFinite(b)) pushCapped(report.weight.invalid, { resi: resiOf(row), berat: row[bi], beratAsli: row[ai] });
@@ -407,14 +420,34 @@ function transformTemplate(template, opts) {
   {
     const ki = c("Kecamatan Tujuan");
     const kota = c("Kota_Tujuan");
+    // Order: 1) the template's own kodepos column (5 digits), 2) the kecamatan
+    // reference, 3) a 5-digit kodepos in Alamat Penerima — only when it settles
+    // an ambiguous kecamatan or exists in the reference (never a random number).
+    const tk = sheet.headers.findIndex((h) => /^(kode\s*pos|kodepos|zip)(\s*(tujuan|penerima))?$/i.test(String(h || "").trim()));
+    const ai = c("Alamat Penerima");
     const missingCount = new Map();
     const ambiguous = new Map();
     const values = sheet.rows.map((row) => {
+      const own = tk >= 0 ? String(row[tk] === undefined || row[tk] === null ? "" : row[tk]).trim().replace(/\.0+$/, "") : "";
+      if (/^[0-9]{5}$/.test(own)) {
+        report.kodepos.filled++;
+        report.kodepos.fromTemplate++;
+        return own;
+      }
       const kecamatan = String(row[ki] === undefined || row[ki] === null ? "" : row[ki]).trim();
       const res = lookupKodepos(kecamatan, kota >= 0 ? String(row[kota] || "") : "");
       if (res.kodepos) {
         report.kodepos.filled++;
         return res.kodepos;
+      }
+      const inAddress = ai >= 0 ? kodeposFromText(row[ai]) : [];
+      const pick = inAddress.find((k) =>
+        res.status === "ambiguous" ? (res.candidates || []).includes(k) : typeof lookupKodepos.isKnown === "function" && lookupKodepos.isKnown(k)
+      );
+      if (pick) {
+        report.kodepos.filled++;
+        report.kodepos.fromAddress++;
+        return pick;
       }
       if (res.status === "ambiguous") ambiguous.set(kecamatan, res.options || []);
       else missingCount.set(kecamatan || "(empty)", (missingCount.get(kecamatan || "(empty)") || 0) + 1);
@@ -441,7 +474,12 @@ function transformTemplate(template, opts) {
   for (const row of sheet.rows) {
     const p = normalizePhone(row[pi]);
     if (p.changed && p.valid) report.phone.normalized++;
-    if (!p.valid) pushCapped(report.phone.invalid, { resi: resiOf(row), value: String(row[pi] === undefined ? "" : row[pi]), issue: p.issue });
+    if (!p.valid) {
+      pushCapped(report.phone.invalid, { resi: resiOf(row), value: String(row[pi] === undefined ? "" : row[pi]), issue: p.issue });
+      // The row stays in the file; the JNE sheet marks it red with a note.
+      const meta = rowMeta.get(row);
+      if (meta) meta.phoneIssue = p.issue; // "empty" | "invalid"
+    }
     row[pi] = p.value;
   }
 

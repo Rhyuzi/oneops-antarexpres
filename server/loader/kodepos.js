@@ -29,6 +29,31 @@ function keyOf(value) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * Fallback spellings of a kecamatan cell: "Cihideung, Kota Tasikmalaya",
+ * "Cihideung / Tasik", "Cihideung (Kota)", "Cihideung - Kota Tasikmalaya"
+ * → "Cihideung"; "Kawalu Kota Tasikmalaya" → "Kawalu".
+ */
+function kecamatanVariants(value) {
+  const s = String(value === null || value === undefined ? "" : value).trim();
+  const out = [];
+  const first = s.split(/[,/(]| - /)[0].trim();
+  if (first && first !== s) out.push(first);
+  const noRegion = first.replace(/\s+(kota|kab\.?|kabupaten)\b.*$/i, "").trim();
+  if (noRegion && noRegion !== first) out.push(noRegion);
+  return out;
+}
+
+/** Standalone 5-digit numbers in a text (an address): "… Tasikmalaya 46115" → ["46115"]. */
+function kodeposFromText(text) {
+  const out = [];
+  const re = /(^|[^0-9])([0-9]{5})(?![0-9])/g;
+  let m;
+  const s = String(text === null || text === undefined ? "" : text);
+  while ((m = re.exec(s))) if (!out.includes(m[2])) out.push(m[2]);
+  return out;
+}
+
 function cleanName(value) {
   return String(value === null || value === undefined ? "" : value).trim().replace(/\s+/g, " ");
 }
@@ -69,8 +94,15 @@ function buildKodeposLookup(refRows, options = {}) {
     return wilayahKeys.find((w) => kota.includes(w)) || null;
   }
 
-  return function lookupKodepos(kecamatan, kotaTujuan) {
-    const candidates = byKey.get(keyOf(kecamatan)) || [];
+  const knownKodepos = new Set(refRows.map((r) => String(r.kodepos)));
+
+  function lookupKodepos(kecamatan, kotaTujuan) {
+    let candidates = byKey.get(keyOf(kecamatan)) || [];
+    // "Cihideung, Kota Tasikmalaya" & co.: retry with the bare kecamatan name.
+    for (const v of candidates.length ? [] : kecamatanVariants(kecamatan)) {
+      candidates = byKey.get(keyOf(v)) || [];
+      if (candidates.length) break;
+    }
     if (!candidates.length) return { kodepos: null, status: "missing" };
     const distinct = (list) => [...new Set(list.map((c) => c.kodepos))];
     if (distinct(candidates).length === 1) return { kodepos: candidates[0].kodepos, status: "ok" };
@@ -84,8 +116,12 @@ function buildKodeposLookup(refRows, options = {}) {
       kodepos: null,
       status: "ambiguous",
       options: candidates.map((c) => `${c.kodepos}${c.wilayah ? ` (${c.wilayah})` : ""}`),
+      candidates: distinct(candidates),
     };
-  };
+  }
+  /** Is this kodepos in the reference (any wilayah)? */
+  lookupKodepos.isKnown = (kodepos) => knownKodepos.has(String(kodepos));
+  return lookupKodepos;
 }
 
 /**
@@ -190,6 +226,8 @@ function toSeedSql(rows, sourceName) {
 
 module.exports = {
   keyOf,
+  kecamatanVariants,
+  kodeposFromText,
   buildKodeposLookup,
   parseMasterWorkbook,
   loadReference,

@@ -180,7 +180,8 @@ async function main() {
     assert.strictEqual(wb.worksheets.length, 1, "exactly one sheet");
     const ws = wb.worksheets[0];
     const H = require("../server/loader/jne").JNE_HEADERS;
-    assert.deepStrictEqual(ws.getRow(1).values.slice(1), H);
+    // The 34 JNE columns + the issue note column at the edge (Indonesian by default).
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), [...H, "KETERANGAN ISSUE"]);
     assert.strictEqual(H.length, 34);
     assert.strictEqual(ws.rowCount, 120);
     const col = (h) => H.indexOf(h) + 1;
@@ -240,7 +241,7 @@ async function main() {
     const wb = await readJne(r.json.download.id);
     assert.deepStrictEqual(wb.worksheets.map((w) => w.name), [JNE.JNE_SHEET]);
     const ws = wb.worksheets[0];
-    assert.deepStrictEqual(ws.getRow(1).values.slice(1), JNE.JNE_HEADERS);
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), [...JNE.JNE_HEADERS, "KETERANGAN ISSUE"]);
     assert.strictEqual(ws.rowCount, 120);
     const col = (h) => JNE.JNE_HEADERS.indexOf(h) + 1;
     ws.eachRow((row, n) => {

@@ -202,7 +202,9 @@ async function main() {
     assert(wb.worksheets.length === 1, `sheets ${wb.worksheets.map((w) => w.name)}`)
     const jne = wb.worksheets[0]
     const headers = jne.getRow(1).values.slice(1)
-    assert(headers.length === 34 && headers[0] === 'TGL DROP' && headers[33] === 'CUSTOMER ID', `headers ${headers.join('|')}`)
+    // 34 JNE columns + the issue note at the edge (page language: English → "ISSUE NOTE").
+    assert(headers.length === 35 && headers[0] === 'TGL DROP' && headers[33] === 'CUSTOMER ID' && headers[34] === 'ISSUE NOTE', `headers ${headers.join('|')}`)
+    for (let r = 2; r <= jne.rowCount; r++) assert(jne.getRow(r).getCell(35).value === null || jne.getRow(r).getCell(35).value === '', `row ${r}: no issue expected`)
     assert(!headers.includes('Berat Asli') && !headers.includes('CUST ID') && !headers.includes('KODEPOS'), 'old layout columns')
     assert(jne.rowCount === 120, `rows ${jne.rowCount}`)
     assert(jne.getRow(1).getCell(5).value === 'RESI JNE' && jne.getRow(2).getCell(5).value === null, 'RESI JNE header kept, cell empty')
@@ -277,9 +279,10 @@ async function main() {
     const red = []
     jne.eachRow((row, n) => { const c = row.getCell(4); if (n > 1 && c.fill?.fgColor?.argb === 'FFFFC7CE') red.push(c.value) })
     assert(red.length === 2 && red.every((v) => String(v) === String(Number(DUP_RESI))), `red rows ${red}`)
-    const cellNotes = []
-    jne.eachRow((row, n) => { const c = row.getCell(4); if (n > 1 && c.note) cellNotes.push(typeof c.note === 'string' ? c.note : c.note.texts.map((x) => x.text).join('')) })
-    assert(cellNotes.length === 2 && cellNotes.every((t) => t === `Duplicate resi (rows 2, ${DUP_LAST_ROW})`), `cell notes: ${cellNotes}`)
+    // The reason in the issue column next to the red rows (column 35).
+    const issueNotes = []
+    jne.eachRow((row, n) => { const c = row.getCell(35); if (n > 1 && c.value) issueNotes.push([c.value, c.fill?.fgColor?.argb]) })
+    assert(issueNotes.length === 2 && issueNotes.every(([t, f]) => t === `Duplicate resi (rows 2, ${DUP_LAST_ROW})` && f === 'FFFFC7CE'), `issue notes: ${JSON.stringify(issueNotes)}`)
     await shot('dup-result')
     // Indonesian
     await ev(`[...document.querySelector('aside').querySelectorAll('button[aria-pressed]')].find((b) => b.getAttribute('lang') === 'id').click()`)
@@ -323,7 +326,7 @@ async function main() {
     }
     // The saved file is the new workbook: Result 3PL first, with SiCepat numbers.
     const saved = new ExcelJS.Workbook(); await saved.xlsx.load(readFileSync(join(downloads, 'LOADER - TEMPLATE 3PL - 2026-11-20T124928.943.xlsx')))
-    assert(saved.worksheets.length === 1 && saved.worksheets[0].getRow(1).values.length - 1 === 34, 'Loader JNE (34 columns)')
+    assert(saved.worksheets.length === 1 && saved.worksheets[0].getRow(1).values.length - 1 === 35, 'Loader JNE (34 columns + issue note)')
     assert(await ev(`document.body.innerText.includes('Loader history')`), 'history card missing')
     await shot('api-done')
   })

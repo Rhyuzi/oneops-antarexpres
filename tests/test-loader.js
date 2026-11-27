@@ -39,6 +39,8 @@ const LOADER_JNE_34 = [
   "CUSTOMER ID",
 ];
 /** 1-based column of a Loader JNE header. */
+// The export = the 34 JNE columns + the issue note column at the edge (column 35, AI).
+const LOADER_OUT = [...LOADER_JNE_34, "KETERANGAN ISSUE"];
 const jc = (h) => LOADER_JNE_34.indexOf(h) + 1;
 
 let passed = 0;
@@ -350,7 +352,7 @@ test("switch OFF: Berat kept exactly as in the template (numbers), Berat Asli st
   assert.strictEqual(getOff(byResiOff("000000000004"), "Berat"), 1);
   assert.strictEqual(getOff(byResiOff("000000000001"), "Berat Asli"), 0.75);
   assert.strictEqual(getOff(byResiOff("000000000003"), "Berat Asli"), 9.1);
-  assert.deepStrictEqual(outOff.report.weight, { conversion: false, normalized: 0, unchanged: 4, belowThreshold: 0, guardSkipped: 0, invalid: [] });
+  assert.deepStrictEqual(outOff.report.weight, { conversion: false, normalized: 0, unchanged: 4, belowThreshold: 0, guardSkipped: 0, zeroToOne: 0, invalid: [] });
 });
 test("switch OFF: sort uses the template Berat", () => {
   assert.deepStrictEqual(outOff.rows.map((r) => getOff(r, "Resi")), ["000000000004", "000000000001", "000000000002", "000000000003"]);
@@ -388,11 +390,14 @@ test("styled output: Titillium Web 9, bold header, thin borders everywhere, numb
     referenceRows: REF,
   });
   const ws = await readBack(res.buffer);
-  assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_JNE_34);
-  ws.eachRow((r, rn) => r.eachCell({ includeEmpty: true }, (cell) => {
+  assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_OUT);
+  // Bold: the header; on red issue rows (invalid phone here) also the resi / issue note.
+  const EMPHASIZED = new Set([jc("NO RESI SICEPAT"), jc("ORDER ID / REFERENCE NUMBER"), 35]);
+  ws.eachRow((r, rn) => r.eachCell({ includeEmpty: true }, (cell, cn) => {
     assert.strictEqual(cell.font.name, "Titillium Web");
     assert.strictEqual(cell.font.size, 9);
-    assert.strictEqual(Boolean(cell.font.bold), rn === 1);
+    const red = Boolean(cell.fill && cell.fill.fgColor && cell.fill.fgColor.argb === "FFFFC7CE");
+    assert.strictEqual(Boolean(cell.font.bold), rn === 1 || (red && EMPHASIZED.has(cn)), `row ${rn} col ${cn}`);
     for (const side of ["top", "left", "bottom", "right"]) assert.strictEqual(cell.border[side].style, "thin");
     assert.ok(!(cell.value && typeof cell.value === "object" && "formula" in cell.value), "formula found");
   }));
@@ -564,7 +569,7 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
       referenceRows: master.rows,
     });
     const rep = res.report;
-    assert.deepStrictEqual(res.headers, LOADER_JNE_34);
+    assert.deepStrictEqual(res.headers, LOADER_OUT);
     assert.strictEqual(rep.rows, 119);
     assert.strictEqual(rep.cod + rep.nonCod, 119);
     assert.deepStrictEqual({ cod: rep.cod, nonCod: rep.nonCod }, { cod: 47, nonCod: 72 });
@@ -574,7 +579,7 @@ if ([SAMPLE_TEMPLATE, SAMPLE_RECHECKED, SAMPLE_MASTER].every((f) => fs.existsSyn
     assert.strictEqual(rep.phone.notInRechecked.length, 119);
     assert.strictEqual(rep.phone.invalid.length, 119); // masked template numbers are flagged, not passed off as valid
     const ws = await readBack(res.buffer);
-    assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_JNE_34);
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), LOADER_OUT);
     assert.strictEqual(ws.rowCount, 120);
     const first = ws.getRow(2);
     assert.strictEqual(first.getCell(jc("NO RESI SICEPAT")).numFmt, "000000000000");
@@ -741,17 +746,17 @@ test("export workbook: ONE sheet (Loader JNE), no old 3PL/TAMPILAN FINAL columns
   await wb.xlsx.load(res.buffer);
   assert.deepStrictEqual(wb.worksheets.map((w) => w.name), [JNE_SHEET]);
   assert.deepStrictEqual(res.report.sheets, [JNE_SHEET]);
-  assert.deepStrictEqual(res.report.columns, LOADER_JNE_34);
+  assert.deepStrictEqual(res.report.columns, LOADER_OUT);
   const headers = wb.worksheets[0].getRow(1).values.slice(1);
   for (const old of ["Resi", "Berat", "Berat Asli", "Penerima", "No HP Penerima", "Kota_Tujuan", "KODEPOS", "Kecamatan Tujuan", "Nilai Barang", "Nilai COD", "CUST ID", "Status Terakhir"]) {
     assert.ok(!headers.includes(old), `old layout column "${old}" in the export`);
   }
 });
-test("JNE headers: the 34 columns in order; RESI JNE header kept, cells empty", async () => {
+test("JNE headers: the 34 columns in order + KETERANGAN ISSUE at the edge; RESI JNE header kept, cells empty", async () => {
   const ws = await readBack((await jneRun()).buffer);
   const headers = ws.getRow(1).values.slice(1);
-  assert.deepStrictEqual(headers, LOADER_JNE_34);
-  assert.strictEqual(ws.columnCount, 34);
+  assert.deepStrictEqual(headers, LOADER_OUT);
+  assert.strictEqual(ws.columnCount, 35);
   for (const h of ["TGL DROP", "STATUS", "NO RESI SICEPAT", "RESI JNE", "KOTA PENERIMA", "NO HANDPHONE PENGIRIM", "CUSTOMER ID"]) assert.ok(headers.includes(h), h);
   const rows = jneRows(ws);
   assert.strictEqual(rows.length, 4);
@@ -777,12 +782,15 @@ test("JNE header style: Titillium 9 bold, all borders; peach headers, RESI JNE s
       assert.strictEqual(cell.font.color.argb, "FFFFFFFF", "separator header text invisible");
     } else assert.strictEqual(cell.fill.fgColor.argb, "FFF7C7AC", `${name} header must be peach`);
   });
+  // The issue column (not part of the JNE layout) has a red header.
+  assert.strictEqual(h.getCell(35).value, "KETERANGAN ISSUE");
+  assert.strictEqual(h.getCell(35).fill.fgColor.argb, "FFFFC7CE");
   assert.strictEqual(ws.getColumn(jc("SS")).width, 3);
   assert.ok(ws.getColumn(jc("RESI JNE")).width >= 12);
 });
-test("JNE navigation: AutoFilter on A1:AH<last row>; frozen panes after RESI JNE (xSplit 5, ySplit 1, F2)", async () => {
+test("JNE navigation: AutoFilter on A1:AI<last row> (incl. KETERANGAN ISSUE); frozen panes after RESI JNE (xSplit 5, ySplit 1, F2)", async () => {
   const ws = await readBack((await jneRun()).buffer);
-  assert.strictEqual(ws.autoFilter, "A1:AH5"); // header + 4 data rows
+  assert.strictEqual(ws.autoFilter, "A1:AI5"); // header + 4 data rows, 34 JNE columns + issue note
   assert.strictEqual(ws.views.length, 1);
   const v = ws.views[0];
   assert.deepStrictEqual([v.state, v.xSplit, v.ySplit, v.topLeftCell], ["frozen", 5, 1, "F2"]);
@@ -907,7 +915,7 @@ test("empty-data warnings never change the output structure", async () => {
   const res = await emptyRun();
   assert.strictEqual(res.report.rows, 3);
   const jne = await readBack(res.buffer);
-  assert.deepStrictEqual(jne.getRow(1).values.slice(1), LOADER_JNE_34);
+  assert.deepStrictEqual(jne.getRow(1).values.slice(1), LOADER_OUT);
   assert.strictEqual(jne.rowCount, 4);
   jne.eachRow((r) => r.eachCell({ includeEmpty: true }, (cell) => assert.strictEqual(cell.font.name, "Titillium Web")));
 });

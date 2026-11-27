@@ -140,7 +140,7 @@ test("a template without duplicates is never stopped", async () => {
   });
   assert.strictEqual(out.report.duplicateResi.groups, 0);
 });
-test("confirmed → all rows kept, duplicate rows painted red (fill, dark red text, red border, bold resi)", async () => {
+test("confirmed → all rows kept; double / invalid rows red with KETERANGAN ISSUE at the edge, valid rows plain + empty note", async () => {
   const out = await run({ acknowledgeDuplicates: true });
   assert.strictEqual(out.report.duplicateResi.groups, 2);
   assert.strictEqual(out.report.duplicateResi.highlighted, 4);
@@ -148,34 +148,42 @@ test("confirmed → all rows kept, duplicate rows painted red (fill, dark red te
   await wb.xlsx.load(out.buffer);
   const ws = wb.worksheets[0];
   assert.strictEqual(ws.rowCount, 6, "every template row is exported");
+  assert.strictEqual(ws.getRow(1).getCell(35).value, "KETERANGAN ISSUE", "issue column after CUSTOMER ID");
   const col = (h) => JNE_HEADERS.indexOf(h) + 1;
   const fillOf = (c) => (c.fill && c.fill.fgColor ? c.fill.fgColor.argb : null);
-  let red = 0;
+  const ZWSP = String.fromCharCode(0x200b);
+  // trim() only: the NBSP-padded copy becomes the number; zero-width / apostrophe stay visible.
+  const expected = new Map([
+    ["4691353011", ["Resi double (baris 2, 5)", "Resi double (baris 2, 5)"]],
+    ["4691353099", [""]],
+    ["4691353012" + ZWSP, ["Resi double (baris 4, 6) | Karakter tidak valid: U+200B (hanya boleh angka)"]],
+    ["'4691353012", ["Resi double (baris 4, 6) | Karakter tidak valid: ' (hanya boleh angka)"]],
+  ]);
+  const seen = new Map();
   for (let r = 2; r <= ws.rowCount; r++) {
-    const resiCell = ws.getRow(r).getCell(col("NO RESI SICEPAT"));
-    const nameCell = ws.getRow(r).getCell(col("NAMA PENERIMA"));
-    const isDup = [4691353011, 4691353012].includes(Number(resiCell.value));
-    if (isDup) {
-      red++;
-      for (const c of [resiCell, nameCell]) {
+    const row = ws.getRow(r);
+    const resiCell = row.getCell(col("NO RESI SICEPAT"));
+    const nameCell = row.getCell(col("NAMA PENERIMA"));
+    const noteCell = row.getCell(35);
+    const note = noteCell.value === null ? "" : String(noteCell.value);
+    seen.set(String(resiCell.value), (seen.get(String(resiCell.value)) || []).concat(note));
+    if (note) {
+      for (const c of [resiCell, nameCell, noteCell]) {
         assert.strictEqual(fillOf(c), DUPLICATE_STYLE.fill, `row ${r} fill`);
         assert.strictEqual(c.font.color.argb, DUPLICATE_STYLE.font, `row ${r} font`);
         assert.strictEqual(c.border.top.color.argb, DUPLICATE_STYLE.border, `row ${r} border`);
       }
       assert.strictEqual(resiCell.font.bold, true, "resi emphasized");
+      assert.strictEqual(noteCell.font.bold, true, "note emphasized");
       assert.ok(!nameCell.font.bold);
     } else {
-      assert.notStrictEqual(fillOf(resiCell), DUPLICATE_STYLE.fill, `row ${r} must not be red`);
-      assert.notStrictEqual(fillOf(nameCell), DUPLICATE_STYLE.fill, `row ${r} must not be red`);
+      for (const c of [resiCell, nameCell, noteCell]) assert.notStrictEqual(fillOf(c), DUPLICATE_STYLE.fill, `row ${r} must not be red`);
     }
   }
-  assert.strictEqual(red, 4);
+  assert.deepStrictEqual([...seen.keys()].sort(), [...expected.keys()].sort());
+  for (const [resi, notes] of expected) assert.deepStrictEqual(seen.get(resi), notes, resi);
   // The spacer column stays invisible (no red block in the separator).
   assert.notStrictEqual(fillOf(ws.getRow(2).getCell(col("SS"))), DUPLICATE_STYLE.fill);
-  // Hidden characters never reach the file: every resi is a clean number.
-  const resis = [];
-  for (let r = 2; r <= ws.rowCount; r++) resis.push(ws.getRow(r).getCell(col("NO RESI SICEPAT")).value);
-  assert.deepStrictEqual(resis.slice().sort(), [4691353011, 4691353011, 4691353012, 4691353012, 4691353099]);
 });
 test("the red style is readable: soft red fill + dark red text (Excel 'Bad' style)", () => {
   assert.deepStrictEqual(DUPLICATE_STYLE, { fill: "FFFFC7CE", font: "FF9C0006", border: "FFE06666" });

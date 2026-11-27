@@ -32,6 +32,18 @@ browser sends it automatically; API clients must capture and replay the
 
 POST body: `{name, description?, parentId?}`.
 
+### Folder actions
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/storage/folders/bulk` | `{ parentId \| null, file: { name, data(base64) } }`. The Excel list has one folder per row (column `Folder` / `Nama Folder` / `Folder Name` / `Nama`, or the first column). Max 500 names. Names repeated in the file (`duplicate_in_file`, with `firstRow`), already present in the target (`exists`) or invalid (`invalid`) are **not** created. Returns `{ created: [{ id, row, name }], skipped: [{ row, name, reason, firstRow? }] }`. Needs `can_create_folder` on the parent (root: Super Admin). Audit `folder.bulk_create` |
+| GET | `/api/storage/folders/:id/download-all/summary` | `{ folder, files, bytes, folders, skippedFolders, tooLarge, filename }`: what the zip will contain |
+| GET | `/api/storage/folders/:id/download-all` | `application/zip` named `<folder> - <YYYYMMDD-HHmm>.zip`. Includes the folder and every sub-folder the user may view **and** download (others are left out); paths are kept (`folder/sub/file`). 404 `FOLDER_EMPTY`; 413 `ZIP_TOO_LARGE` above 2,000 files or 2 GB. Files are read from R2 by the server one at a time and stored uncompressed (`server/zipWriter.js`). Audit `folder.download_all` |
+
+| GET | `/api/storage/download-selection(/summary)?folders=1,2&files=3,4&name=<folder>` | Zip of a multi-selection: the selected folders (with their sub-folders, per-folder permission) plus the selected files (download permission on their folder; any refusal → 403, all-or-nothing). Files of selected folders keep `<folder>/…`; selected files go to the zip root; names are made unique. 400 `NOTHING_SELECTED`. Same limits as download-all. Audit `folder.download_selection` |
+
+**Multi-select (UI, `src/lib/selection.ts`).** Click selects one item; Ctrl/Cmd+click toggles; Shift+click selects a range from the anchor (earlier Ctrl/Cmd picks are kept). Shift+↑/↓ extends the range, Ctrl/Cmd+↑/↓ moves the focus only, Space toggles the focused item, Ctrl/Cmd+A selects all, Esc clears, Enter or double-click opens. A Select-all checkbox (checked / indeterminate / unchecked) and a bulk bar (Download / Move / Delete) follow the selection. Move and Delete call the single-item endpoints for each item.
+
 ## Storage — Files
 
 | Method | Path | Permission | Description |

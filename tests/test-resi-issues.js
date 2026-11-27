@@ -68,7 +68,7 @@ test("both on one row → every reason, joined", () => {
   const list = LIST.map((r) => r.slice());
   list[48] = ["4691353011!"]; // same digits as row 26 + an invalid character
   const a = R.analyzeResi(listTable(list));
-  assert.strictEqual(noteOf(a, 49), "Resi double (baris 26, 49); Karakter tidak valid: ! (hanya boleh angka)");
+  assert.strictEqual(noteOf(a, 49), "Resi double (baris 26, 49) | Karakter tidak valid: ! (hanya boleh angka)");
   assert.strictEqual(noteOf(a, 26), "Resi double (baris 26, 49)");
   assert.deepStrictEqual(a.rows.find((r) => r.row === 49).issues, [{ type: "duplicate", rows: [26, 49] }, { type: "invalid", chars: ["!"] }]);
 });
@@ -78,14 +78,24 @@ test("valid, unique rows have no issue and an empty note", () => {
   assert.deepStrictEqual(a.rows.find((r) => r.row === 1).issues, []);
   assert.strictEqual(noteOf(a, 1), "");
 });
-test("invalid characters: letters / symbols / dashes are reported; hidden characters are not", () => {
+test("strict rule: trim(), then /^\d+$/ — symbols, letters, inner spaces, invisible characters are invalid", () => {
+  const ZWSP = String.fromCharCode(0x200b);
+  const NBSP = String.fromCharCode(0xa0);
   assert.deepStrictEqual(R.invalidChars("46913A53011-"), ["A", "-"]);
   assert.deepStrictEqual(R.invalidChars("4691?35?3011"), ["?"], "each character once");
-  for (const v of [4691353011, " 4691353011 ", "4691353011 ", "​4691353011", "'4691353011", "4691353011.0", "﻿4691353011"]) {
+  assert.deepStrictEqual(R.invalidChars("4691/353011"), ["/"]);
+  assert.deepStrictEqual(R.invalidChars("4691 353011"), [" "], "space inside the resi");
+  assert.deepStrictEqual(R.invalidChars("4691353011" + ZWSP), [ZWSP], "zero-width is not trimmed");
+  assert.deepStrictEqual(R.invalidChars("'4691353011"), ["'"]);
+  assert.deepStrictEqual(R.invalidChars("4691353011.0"), ["."]);
+  // trim(): outer spaces / tabs / line breaks / NBSP are fine.
+  for (const v of [4691353011, " 4691353011 ", String.fromCharCode(9) + "4691353011" + String.fromCharCode(10), NBSP + "4691353011" + NBSP, "004691353011"]) {
     assert.deepStrictEqual(R.invalidChars(v), [], JSON.stringify(v));
   }
+  // Notes name spaces and invisible characters.
+  assert.strictEqual(R.issueText([{ type: "invalid", chars: [" ", ZWSP, "/"] }], "id"), "Karakter tidak valid: spasi, U+200B, / (hanya boleh angka)");
+  assert.strictEqual(R.issueText([{ type: "invalid", chars: [" "] }], "en"), "Invalid characters: space (digits only)");
 });
-
 async function readReport(buf) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
@@ -134,27 +144,34 @@ test("file mode: 409 RESI_ISSUES lists the rows and reasons (also for invalid ch
   });
   await assert.rejects(onlyInvalid, (e) => e.code === "RESI_ISSUES" && e.details.resiIssues.summary.invalidRows === 1);
 });
-test("JNE file: issue rows red + the reason as a note on NO RESI SICEPAT (language of the request); valid rows plain", async () => {
-  for (const [locale, dup, inv] of [["id", "Resi double (baris 2, 4)", "Karakter tidak valid: ? (hanya boleh angka)"], ["en", "Duplicate resi (rows 2, 4)", "Invalid characters: ? (digits only)"]]) {
+test("JNE file: KETERANGAN ISSUE at the edge (after CUSTOMER ID), red rows with the reason, valid rows plain + empty note", async () => {
+  for (const [locale, header, dup, inv] of [
+    ["id", "KETERANGAN ISSUE", "Resi double (baris 2, 4)", "Karakter tidak valid: ? (hanya boleh angka)"],
+    ["en", "ISSUE NOTE", "Duplicate resi (rows 2, 4)", "Invalid characters: ? (digits only)"],
+  ]) {
     const out = await run({ acknowledgeDuplicates: true, locale });
     assert.strictEqual(out.report.resiIssues.summary.withIssues, 3);
     const ws = await readReport(out.buffer);
-    assert.strictEqual(ws.columnCount, 34, "the JNE layout keeps its 34 columns");
+    assert.strictEqual(ws.columnCount, 35, "34 JNE columns + the issue note");
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1, 35), JNE_HEADERS, "the JNE layout is unchanged in front");
+    assert.strictEqual(ws.getRow(1).getCell(35).value, header, locale);
     const col = JNE_HEADERS.indexOf("NO RESI SICEPAT") + 1;
     const notes = {};
     ws.eachRow((r, n) => {
       if (n === 1) return;
-      const c = r.getCell(col);
-      const note = c.note ? (typeof c.note === "string" ? c.note : c.note.texts.map((x) => x.text).join("")) : null;
-      notes[String(c.value)] = (notes[String(c.value)] || []).concat([[note, fillOf(c)]]);
+      const resi = r.getCell(col);
+      const note = r.getCell(35);
+      assert.strictEqual(resi.note, undefined, "no cell comments any more");
+      notes[String(resi.value)] = (notes[String(resi.value)] || []).concat([[note.value === null ? "" : note.value, fillOf(resi), fillOf(note)]]);
     });
-    assert.deepStrictEqual(notes["4691353011"], [[dup, "FFFFC7CE"], [dup, "FFFFC7CE"]], locale);
-    assert.deepStrictEqual(notes["4691353099?"], [[inv, "FFFFC7CE"]], locale);
-    assert.strictEqual(notes["4691353012"][0][0], null, "valid row: no note");
-    assert.notStrictEqual(notes["4691353012"][0][1], "FFFFC7CE");
+    assert.deepStrictEqual(notes["4691353011"], [[dup, "FFFFC7CE", "FFFFC7CE"], [dup, "FFFFC7CE", "FFFFC7CE"]], locale);
+    assert.deepStrictEqual(notes["4691353099?"], [[inv, "FFFFC7CE", "FFFFC7CE"]], locale);
+    const valid = notes["4691353012"][0];
+    assert.strictEqual(valid[0], "", "valid row: empty note");
+    assert.ok(valid[1] !== "FFFFC7CE" && valid[2] !== "FFFFC7CE", "valid row: not red");
+    assert.deepStrictEqual(ws.autoFilter, "A1:AI5", "the issue column is filterable");
   }
 });
-
 section("Texts: server (Excel) == UI dictionary");
 test("loader.resiIssue.* in en.ts / id.ts match the texts written into the file", () => {
   const out = esbuild.buildSync({

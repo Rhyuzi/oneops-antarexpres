@@ -43,14 +43,29 @@ const JNE_SHEET_STYLE = {
   spacerColumns: ["SS"], // narrow, unfilled, header text invisible (as in the samples)
   freezeAfter: "RESI JNE", // xSplit = 5, ySplit = 1
   autoFilter: true,
+  // Data cells centred (the date, the category and the sender columns).
+  centerColumns: ["TGL DROP", "CATEGORY", "KOTA PENGIRIM", "NAMA PENGIRIM"],
 };
+/** DESKRIPSI BARANG when the template's Nama Barang is blank. */
+const DEFAULT_DESKRIPSI = "PAKET";
 const LIST_CAP = 500;
 
-/** Today (server-local calendar day) as a UTC-midnight Date — Excel shows it unshifted. */
-/** " 4691353011 " / "'4691353011" / "4691353011​" → "4691353011" (leading zeros kept). */
+/** The resi as written to the file: trim() only — an invalid resi stays visible as typed. */
 function cleanResi(value) {
   if (typeof value !== "string") return value;
-  return value.replace(/[\s ​-‍﻿]+/g, "").replace(/^'/, "");
+  return value.trim();
+}
+
+/** Extra column after the 34 JNE columns: why a row is red (empty when valid). */
+const ISSUE_HEADER_FILL = "FFFFC7CE";
+
+/** Today (server-local calendar day) as a UTC-midnight Date — Excel shows it unshifted. */
+/** Nama Barang → DESKRIPSI BARANG; blank (null / "" / spaces) → "PAKET" (counted). */
+function deskripsiOf(value, stats) {
+  const s = value === null || value === undefined ? "" : String(value).trim();
+  if (s) return value;
+  stats.deskripsiDefaulted++;
+  return DEFAULT_DESKRIPSI;
 }
 
 function excelToday(now = new Date()) {
@@ -67,8 +82,9 @@ function excelToday(now = new Date()) {
  * @param {Date}   [opts.date]        TANGGAL (default: today)
  * @param {Set<number>} [opts.duplicateRows]  Excel row numbers (template) of rows with a resi
  *        issue; the matching output rows are returned in highlightRows (painted red)
- * @param {Map<number,string>} [opts.rowNotes]  Excel row (template) → issue reason; returned
- *        per output row index in notes (cell note on NO RESI SICEPAT)
+ * @param {Map<number,string>} [opts.rowNotes]  Excel row (template) → issue reason, written
+ *        into the last column (opts.issueHeader, right after CUSTOMER ID); "" for valid rows
+ * @param {string} [opts.issueHeader="KETERANGAN ISSUE"]  that column's header (language of the request)
  * @param {{kotaPengirim: string, namaPengirim: string}} [opts.sender]
  *        From the wilayah + kota picked in the Loader form (server/loader/wilayah.js):
  *        KOTA PENGIRIM ("" for Tasikmalaya, else the wilayah name) and
@@ -76,7 +92,7 @@ function excelToday(now = new Date()) {
  *        older callers) NAMA PENGIRIM comes from the gerai/HUB master and
  *        KOTA PENGIRIM stays empty.
  */
-function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG", date = excelToday(), sender = null, duplicateRows = null, rowNotes = null }) {
+function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG", date = excelToday(), sender = null, duplicateRows = null, rowNotes = null, issueHeader = "KETERANGAN ISSUE", phoneNote = null }) {
   const at = (name) => result.headers.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
   const col = {
     resi: at("Resi"), berat: at("Berat"), penerima: at("Penerima"),
@@ -90,11 +106,16 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
   const groups = new Map();
 
   const highlightRows = new Set();
-  const notes = new Map();
+  // Row counters reported at the top level of the loader report.
+  const stats = { deskripsiDefaulted: 0, phoneIssueRows: 0 };
   const rows = result.rows.map((row, i) => {
     const meta = (result.meta && result.meta[i]) || { rowNumber: i + 2, geraiCode: "", geraiName: "" };
     if (duplicateRows && duplicateRows.has(meta.rowNumber)) highlightRows.add(i);
-    if (rowNotes && rowNotes.has(meta.rowNumber)) notes.set(i, rowNotes.get(meta.rowNumber));
+    // Invalid / missing recipient phone: the row stays, red, with a note.
+    if (meta.phoneIssue) {
+      highlightRows.add(i);
+      stats.phoneIssueRows++;
+    }
     const cod = String(v(row, col.cod)).trim();
     const kotaTujuan = String(v(row, col.kota));
     const kp = lookupKotaPenerima(meta, kotaTujuan);
@@ -123,7 +144,7 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
       "NO HANDPHONE PENERIMA": v(row, col.hp),
       "JUMLAH PACKING": JUMLAH_PACKING, // always 1 (template Koli is ignored)
       "BERAT/KG": v(row, col.berat),
-      "DESKRIPSI BARANG": v(row, col.barang),
+      "DESKRIPSI BARANG": deskripsiOf(v(row, col.barang), stats),
       "HARGA BARANG": v(row, col.nilai),
       SERVICE: service,
       "ORDER ID / REFERENCE NUMBER": resi,
@@ -135,13 +156,18 @@ function buildJneSheet(result, { lookupKotaPenerima, senderPhone, service = "REG
       "NO HANDPHONE PENGIRIM": senderPhone,
       "CUSTOMER ID": v(row, col.cust),
     };
-    return JNE_HEADERS.map((h) => (h in values ? values[h] : ""));
+    const notes = [];
+    if (rowNotes && rowNotes.has(meta.rowNumber)) notes.push(rowNotes.get(meta.rowNumber));
+    if (meta.phoneIssue) notes.push(phoneNote ? phoneNote(meta.phoneIssue) : meta.phoneIssue);
+    const issue = notes.filter(Boolean).join(" | ");
+    return [...JNE_HEADERS.map((h) => (h in values ? values[h] : "")), issue];
   });
 
   report.fallbackGroups = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, LIST_CAP);
-  return { headers: JNE_HEADERS, rows, report, highlightRows, notes };
+  // The 34 JNE columns unchanged, then the issue note at the edge of the table.
+  return { headers: [...JNE_HEADERS, issueHeader], rows, report, stats, highlightRows, issueHeader };
 }
 
 if (JNE_HEADERS.length !== 34) throw new Error("Loader JNE layout must have exactly 34 columns");
 
-module.exports = { JNE_HEADERS, JNE_SHEET, JNE_HEADER_FILL, RESI_JNE_HEADER_FILL, JNE_SHEET_STYLE, buildJneSheet, excelToday, cleanResi };
+module.exports = { JNE_HEADERS, JNE_SHEET, JNE_HEADER_FILL, RESI_JNE_HEADER_FILL, ISSUE_HEADER_FILL, JNE_SHEET_STYLE, DEFAULT_DESKRIPSI, buildJneSheet, excelToday, cleanResi };

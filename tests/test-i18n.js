@@ -121,7 +121,7 @@ test("untranslated (identical) values are only product names / technical terms",
     // Wilayah master (migration 014): JNE sender column + domain term.
     "Kota", "KOTA PENGIRIM",
     // Resi issue notes: list separator, the same in both languages.
-    "; ",
+    " | ",
   ]);
   const same = Object.keys(enLeaves).filter((k) => enLeaves[k] === idLeaves[k] && !ALLOWED.has(enLeaves[k]));
   assert.deepStrictEqual(same, [], `identical values need translation or an ALLOWED entry: ${same.join(", ")}`);

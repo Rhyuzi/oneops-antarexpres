@@ -23,6 +23,12 @@ const {
   ALL_CAPS,
 } = require("../permissions");
 const { logAudit, ACTIONS } = require("../audit");
+const { createZip } = require("../zipWriter");
+const bulk = require("../folderBulk");
+
+// "Download all from folder": hard limits (classic zip, server memory per file).
+const MAX_ZIP_FILES = 2000;
+const MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
 
 const router = express.Router();
 
@@ -206,6 +212,368 @@ router.post("/folders", async (req, res) => {
     return res.status(201).json({ ok: true, folder: created });
   } catch (err) {
     return fail(res, err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bulk create folders from Excel
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/storage/folders/bulk { parentId, file: { name, data(base64) } }
+ * Creates one folder per name in the Excel list (server/folderBulk.js). Names
+ * repeated in the file or already present in the target are NOT created; the
+ * response lists them for the notification. Same permission as creating one
+ * folder (can_create_folder on the parent; root: Super Admin). One audit row.
+ */
+router.post("/folders/bulk", async (req, res) => {
+  try {
+    const { parentId = null, file } = req.body || {};
+    if (!file || typeof file !== "object" || typeof file.data !== "string" || !file.data) {
+      return res.status(400).json({ ok: false, code: "FILE_REQUIRED", message: "An Excel file is required." });
+    }
+    const fileName = String(file.name || "folders.xlsx").slice(0, 200);
+    if (!/\.(xlsx|xls|csv)$/i.test(fileName)) {
+      return res.status(400).json({ ok: false, code: "FILE_TYPE", message: "Only .xlsx, .xls or .csv files are supported." });
+    }
+    if (!isRoot(parentId)) {
+      await authorizeFolder(req.user, Number(parentId), "can_create_folder");
+    } else if (!req.user.roles.includes("super_admin")) {
+      return res.status(403).json({ ok: false, message: "Only Super Admin can create root folders." });
+    }
+
+    const { names, sheetName } = bulk.readFolderNames(Buffer.from(file.data, "base64"), fileName);
+    const existing = (await query(
+      `SELECT name FROM storage_folders WHERE parent_id ${isRoot(parentId) ? "IS NULL" : "= ?"} AND deleted_at IS NULL`,
+      isRoot(parentId) ? [] : [Number(parentId)]
+    )).map((r) => r.name);
+    const plan = bulk.planFolders(names, existing);
+
+    const created = [];
+    for (const item of plan.create) {
+      // Re-check right before inserting (another user may have created it meanwhile).
+      const dupe = await query(
+        `SELECT id FROM storage_folders WHERE parent_id ${isRoot(parentId) ? "IS NULL" : "= ?"} AND name = ? AND deleted_at IS NULL LIMIT 1`,
+        isRoot(parentId) ? [item.name] : [Number(parentId), item.name]
+      );
+      if (dupe.length) {
+        plan.skipped.push({ row: item.row, name: item.name, reason: "exists" });
+        continue;
+      }
+      let r;
+      try {
+        r = await query(
+          `INSERT INTO storage_folders (parent_id, name, description, created_by, updated_by) VALUES (?, ?, NULL, ?, ?)`,
+          [isRoot(parentId) ? null : Number(parentId), item.name, req.user.id, req.user.id]
+        );
+      } catch (err) {
+        if (err.code !== "ER_DUP_ENTRY") throw err;
+        plan.skipped.push({ row: item.row, name: item.name, reason: "exists" });
+        continue;
+      }
+      created.push({ id: Number(r.insertId), row: item.row, name: item.name });
+    }
+    plan.skipped.sort((a, b) => a.row - b.row);
+
+    const parentName = isRoot(parentId)
+      ? null
+      : ((await query("SELECT name FROM storage_folders WHERE id = ?", [Number(parentId)]))[0] || {}).name || null;
+    await logAudit({
+      req,
+      userId: req.user.id,
+      action: ACTIONS.FOLDER_BULK_CREATE,
+      entityType: "folder",
+      entityId: isRoot(parentId) ? null : Number(parentId),
+      after: { created: created.slice(0, 100).map((c) => c.name) },
+      metadata: {
+        parent: parentName,
+        parent_id: isRoot(parentId) ? null : Number(parentId),
+        file: fileName,
+        created: created.length,
+        skipped: plan.skipped.length,
+        skipped_names: plan.skipped.slice(0, 50).map((s) => `${s.name} (${s.reason})`),
+      },
+      ip: clientIp(req),
+    });
+
+    return res.status(created.length ? 201 : 200).json({
+      ok: true,
+      sheet: sheetName,
+      total: names.length,
+      created,
+      skipped: plan.skipped,
+    });
+  } catch (err) {
+    if (err instanceof bulk.BulkFolderError) return res.status(err.status).json({ ok: false, code: err.code, message: err.message });
+    return fail(res, err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Download all files of a folder (zip)
+// ---------------------------------------------------------------------------
+
+/**
+ * Files of a folder and all its sub-folders the user may download (view +
+ * download permission per folder, nearest-override like everywhere else).
+ * Entry names keep the structure: "<folder>/<sub>/<file>".
+ */
+async function collectFolderFiles(user, rootId) {
+  await authorizeFolder(user, rootId, "can_download");
+  const all = await query("SELECT id, parent_id, name FROM storage_folders WHERE deleted_at IS NULL");
+  const byId = new Map(all.map((f) => [Number(f.id), f]));
+  const root = byId.get(rootId);
+  const children = new Map();
+  for (const f of all) {
+    const p = f.parent_id ? Number(f.parent_id) : null;
+    if (!children.has(p)) children.set(p, []);
+    children.get(p).push(f);
+  }
+  const chainOf = (id) => {
+    const chain = [];
+    for (let cur = id; cur && !chain.includes(cur); cur = byId.get(cur) && byId.get(cur).parent_id ? Number(byId.get(cur).parent_id) : null) {
+      if (!byId.has(cur)) break;
+      chain.push(cur);
+    }
+    return chain;
+  };
+  const [rolesById, permRows] = await Promise.all([getRolesById(), query("SELECT * FROM storage_folder_permissions")]);
+
+  const allowed = new Map(); // folder id → path inside the zip
+  let skippedFolders = 0;
+  const walk = (folder, path) => {
+    const perms = computeFolderPermissions(user.roles, chainOf(Number(folder.id)), permRows, rolesById);
+    if (!perms.can_view || !perms.can_download) {
+      skippedFolders++;
+      return; // nothing below a folder the user may not download
+    }
+    allowed.set(Number(folder.id), path);
+    for (const child of children.get(Number(folder.id)) || []) walk(child, `${path}/${child.name}`);
+  };
+  walk(root, root.name);
+
+  const ids = [...allowed.keys()];
+  const files = ids.length
+    ? await query(
+        `SELECT id, folder_id, file_name, object_key, file_size, updated_at FROM storage_files
+          WHERE deleted_at IS NULL AND folder_id IN (${ids.map(() => "?").join(",")}) ORDER BY folder_id, file_name`,
+        ids
+      )
+    : [];
+  // Unique entry names ("a.pdf", "a (2).pdf") per path.
+  const used = new Set();
+  const entries = files.map((f) => {
+    const dir = allowed.get(Number(f.folder_id));
+    let name = `${dir}/${f.file_name}`;
+    for (let n = 2; used.has(name.toLowerCase()); n++) {
+      const dot = f.file_name.lastIndexOf(".");
+      name = dot > 0 ? `${dir}/${f.file_name.slice(0, dot)} (${n})${f.file_name.slice(dot)}` : `${dir}/${f.file_name} (${n})`;
+    }
+    used.add(name.toLowerCase());
+    return { id: Number(f.id), name, objectKey: f.object_key, size: Number(f.file_size) || 0, date: f.updated_at ? new Date(f.updated_at) : new Date() };
+  });
+  const bytes = entries.reduce((s, e) => s + e.size, 0);
+  return { root, entries, bytes, folders: ids.length, skippedFolders };
+}
+
+function zipName(folderName, now = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}`;
+  const safe = String(folderName || "folder").replace(/[\\/:*?"<>|\r\n]+/g, " ").trim().slice(0, 100) || "folder";
+  return `${safe} - ${stamp}.zip`;
+}
+
+function tooBig(c) {
+  return c.entries.length > MAX_ZIP_FILES || c.bytes > MAX_ZIP_BYTES;
+}
+
+// GET /api/storage/folders/:id/download-all/summary — what the zip will contain
+router.get("/folders/:id/download-all/summary", async (req, res) => {
+  try {
+    const c = await collectFolderFiles(req.user, Number(req.params.id));
+    return res.json({
+      ok: true,
+      folder: c.root.name,
+      files: c.entries.length,
+      bytes: c.bytes,
+      folders: c.folders,
+      skippedFolders: c.skippedFolders,
+      tooLarge: tooBig(c),
+      limits: { files: MAX_ZIP_FILES, bytes: MAX_ZIP_BYTES },
+      filename: zipName(c.root.name),
+    });
+  } catch (err) {
+    return fail(res, err, err.status === 403 ? 403 : 500);
+  }
+});
+
+/**
+ * Streams entries as a zip. Validation (empty / too large / storage down)
+ * happens before any header is sent, so those stay clean JSON errors; a
+ * failure mid-stream aborts the connection (the browser reports a failed
+ * download instead of saving a broken zip). Returns { files } or null.
+ */
+async function sendZip(res, entries, filename) {
+  // Fetch the first object before sending headers: storage errors stay a clean 503.
+  let first;
+  try {
+    first = await r2.getObjectStream(entries[0].objectKey);
+  } catch (err) {
+    res.status(503).json({ ok: false, message: "File storage is not available." });
+    return null;
+  }
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const zip = createZip(res);
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const body = i === 0 ? first : await r2.getObjectStream(e.objectKey);
+      await zip.addFile(e.name, body, { date: e.date });
+    }
+    const out = await zip.finish();
+    res.end();
+    return out;
+  } catch (err) {
+    console.error("[storage] zip aborted:", err.message);
+    res.destroy(err);
+    return null;
+  }
+}
+
+// GET /api/storage/folders/:id/download-all — the zip (streamed)
+router.get("/folders/:id/download-all", async (req, res) => {
+  try {
+    const c = await collectFolderFiles(req.user, Number(req.params.id));
+    if (!c.entries.length) {
+      return res.status(404).json({ ok: false, code: "FOLDER_EMPTY", message: "This folder has no files to download." });
+    }
+    if (tooBig(c)) {
+      return res.status(413).json({ ok: false, code: "ZIP_TOO_LARGE", message: "Too many or too large files for one zip. Download sub-folders separately." });
+    }
+    const out = await sendZip(res, c.entries, zipName(c.root.name));
+    if (!out) return;
+    await logAudit({
+      req,
+      userId: req.user.id,
+      action: ACTIONS.FOLDER_DOWNLOAD_ALL,
+      entityType: "folder",
+      entityId: Number(req.params.id),
+      metadata: { folder: c.root.name, files: out.files, bytes: c.bytes, sub_folders: c.folders - 1, skipped_folders: c.skippedFolders },
+      ip: clientIp(req),
+    });
+  } catch (err) {
+    return fail(res, err, err.status === 403 ? 403 : 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Download a multi-selection (folders + files of one view) as one zip
+// ---------------------------------------------------------------------------
+
+/** "1,2,3" → [1, 2, 3] (positive integers, unique, max 1000). */
+function idList(v) {
+  return [...new Set(String(v || "").split(",").map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 1000);
+}
+
+/**
+ * Selected folders (with their sub-folders, per-folder download permission)
+ * and files (download permission on their folder). Folder contents keep their
+ * structure ("<folder>/…"); files go to the zip root. Names are made unique.
+ */
+async function collectSelection(user, folderIds, fileIds) {
+  const entries = [];
+  let bytes = 0;
+  let skippedFolders = 0;
+  for (const id of folderIds) {
+    const c = await collectFolderFiles(user, id); // 403 / 404 when not allowed
+    entries.push(...c.entries);
+    bytes += c.bytes;
+    skippedFolders += c.skippedFolders;
+  }
+  if (fileIds.length) {
+    const files = await query(
+      `SELECT id, folder_id, file_name, object_key, file_size, updated_at FROM storage_files
+        WHERE deleted_at IS NULL AND id IN (${fileIds.map(() => "?").join(",")})`,
+      fileIds
+    );
+    if (files.length !== fileIds.length) {
+      const err = new Error("File not found");
+      err.status = 404;
+      throw err;
+    }
+    const checked = new Set();
+    for (const f of files) {
+      if (!checked.has(Number(f.folder_id))) {
+        await authorizeFolder(user, Number(f.folder_id), "can_download");
+        checked.add(Number(f.folder_id));
+      }
+      entries.push({ id: Number(f.id), name: f.file_name, objectKey: f.object_key, size: Number(f.file_size) || 0, date: f.updated_at ? new Date(f.updated_at) : new Date() });
+      bytes += Number(f.file_size) || 0;
+    }
+  }
+  const used = new Set();
+  for (const e of entries) {
+    const original = e.name;
+    for (let n = 2; used.has(e.name.toLowerCase()); n++) {
+      const dot = original.lastIndexOf(".");
+      const slash = original.lastIndexOf("/");
+      e.name = dot > slash + 1 ? `${original.slice(0, dot)} (${n})${original.slice(dot)}` : `${original} (${n})`;
+    }
+    used.add(e.name.toLowerCase());
+  }
+  return { entries, bytes, skippedFolders };
+}
+
+function selectionParams(req) {
+  const folders = idList(req.query.folders);
+  const files = idList(req.query.files);
+  const name = String(req.query.name || "").slice(0, 100) || "Data Warrior";
+  return { folders, files, name };
+}
+
+// GET /api/storage/download-selection/summary?folders=1,2&files=3,4
+router.get("/download-selection/summary", async (req, res) => {
+  try {
+    const p = selectionParams(req);
+    if (!p.folders.length && !p.files.length) return res.status(400).json({ ok: false, code: "NOTHING_SELECTED", message: "Select at least one file or folder." });
+    const c = await collectSelection(req.user, p.folders, p.files);
+    return res.json({
+      ok: true,
+      files: c.entries.length,
+      bytes: c.bytes,
+      skippedFolders: c.skippedFolders,
+      tooLarge: tooBig(c),
+      filename: zipName(p.name),
+    });
+  } catch (err) {
+    return fail(res, err, err.status === 403 ? 403 : 500);
+  }
+});
+
+// GET /api/storage/download-selection?folders=1,2&files=3,4&name=<current folder>
+router.get("/download-selection", async (req, res) => {
+  try {
+    const p = selectionParams(req);
+    if (!p.folders.length && !p.files.length) return res.status(400).json({ ok: false, code: "NOTHING_SELECTED", message: "Select at least one file or folder." });
+    const c = await collectSelection(req.user, p.folders, p.files);
+    if (!c.entries.length) return res.status(404).json({ ok: false, code: "FOLDER_EMPTY", message: "This folder has no files to download." });
+    if (tooBig(c)) {
+      return res.status(413).json({ ok: false, code: "ZIP_TOO_LARGE", message: "Too many or too large files for one zip. Download sub-folders separately." });
+    }
+    const out = await sendZip(res, c.entries, zipName(p.name));
+    if (!out) return;
+    await logAudit({
+      req,
+      userId: req.user.id,
+      action: ACTIONS.FOLDER_DOWNLOAD_SELECTION,
+      entityType: "folder",
+      metadata: { folders: p.folders.length, selected_files: p.files.length, files: out.files, bytes: c.bytes, name: p.name },
+      ip: clientIp(req),
+    });
+  } catch (err) {
+    return fail(res, err, err.status === 403 ? 403 : 500);
   }
 });
 

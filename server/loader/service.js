@@ -12,9 +12,9 @@ const { readTable, readRechecked, writeWorkbook } = require("./excel");
 const { buildKodeposLookup, loadReference } = require("./kodepos");
 const { loadKotaMap } = require("./settings");
 const { buildHubLookup, loadHubs } = require("./hubs");
-const { buildJneSheet, JNE_HEADERS, JNE_SHEET, JNE_SHEET_STYLE } = require("./jne");
+const { buildJneSheet, JNE_SHEET, JNE_SHEET_STYLE, ISSUE_HEADER_FILL } = require("./jne");
 const { findDuplicateResi, summarizeDuplicates } = require("./duplicates");
-const { analyzeResi, issueText } = require("./resiIssues");
+const { analyzeResi, issueText, phoneIssueText, TEXT: ISSUE_TEXT, localeOf } = require("./resiIssues");
 
 const ISSUE_LIST_CAP = 500;
 /** Rows with a resi issue, JSON-safe (UI panel + 409 details). */
@@ -101,23 +101,29 @@ async function buildLoaderFile({
     sender,
     duplicateRows: issueRows,
     rowNotes,
+    issueHeader: ISSUE_TEXT[localeOf(locale)].column,
+    phoneNote: (issue) => phoneIssueText(issue, locale),
     ...(date ? { date } : {}),
   });
   const buffer = await writeWorkbook([{
     name: JNE_SHEET, headers: jne.headers, rows: jne.rows, ...JNE_SHEET_STYLE,
-    highlightRows: jne.highlightRows, emphasizeColumns: ["NO RESI SICEPAT", "ORDER ID / REFERENCE NUMBER"],
-    rowNotes: jne.notes,
+    // The issue column's header is red too: it is not part of the JNE layout.
+    headerFills: { ...JNE_SHEET_STYLE.headerFills, [jne.issueHeader]: ISSUE_HEADER_FILL },
+    highlightRows: jne.highlightRows, emphasizeColumns: ["NO RESI SICEPAT", "ORDER ID / REFERENCE NUMBER", jne.issueHeader],
   }]);
   return {
     buffer,
     filename: outputFileName(templateName),
-    headers: JNE_HEADERS,
+    headers: jne.headers, // 34 JNE columns + KETERANGAN ISSUE
     report: {
       ...result.report,
       kotaPenerima: jne.report,
+      // DESKRIPSI BARANG blank → PAKET; rows kept with an invalid / missing phone (red + note).
+      deskripsiDefaulted: jne.stats.deskripsiDefaulted,
+      phoneIssueRows: jne.stats.phoneIssueRows,
       sheets: [JNE_SHEET],
       senderPhone,
-      columns: JNE_HEADERS,
+      columns: jne.headers, // the 34 JNE columns + the issue note column
       template: { name: templateName, sheet: table.sheetName },
       rechecked: recheckedMeta,
       wilayah: wilayah || null,

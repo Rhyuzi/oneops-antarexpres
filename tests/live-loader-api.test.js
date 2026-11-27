@@ -219,11 +219,11 @@ async function main() {
       assert.strictEqual(dl.status, 200);
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(dl.buf);
-      // API job output = the same single Loader JNE sheet (34 columns).
+      // API job output = the same single Loader JNE sheet (34 columns + KETERANGAN ISSUE).
       assert.strictEqual(wb.worksheets.length, 1);
       const ws = wb.worksheets[0];
       const headers = ws.getRow(1).values.slice(1);
-      assert.deepStrictEqual(headers, require("../server/loader/jne").JNE_HEADERS);
+      assert.deepStrictEqual(headers, [...require("../server/loader/jne").JNE_HEADERS, "KETERANGAN ISSUE"]);
       let found = 0;
       ws.eachRow((row, n) => {
         if (n === 1) return;

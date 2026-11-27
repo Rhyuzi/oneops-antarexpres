@@ -37,6 +37,9 @@ const { query } = require("./db");
 
 const ACTIONS = {
   FOLDER_CREATE: "folder.create",
+  FOLDER_BULK_CREATE: "folder.bulk_create",
+  FOLDER_DOWNLOAD_ALL: "folder.download_all",
+  FOLDER_DOWNLOAD_SELECTION: "folder.download_selection",
   FOLDER_UPDATE: "folder.update",
   FOLDER_RENAME: "folder.rename",
   FOLDER_MOVE: "folder.move",
@@ -260,6 +263,9 @@ function describe(action, d, entityId) {
     case "user.activate": return `Activated user ${who}`.trim();
     case "user.deactivate": return `Deactivated user ${who}`.trim();
     case "folder.create": return `Created folder "${x.name || entityId}"`;
+    case "folder.bulk_create": return `Bulk-created ${x.created || 0} folder(s)${x.parent ? ` in "${x.parent}"` : ""} from Excel${x.skipped ? ` (${x.skipped} skipped)` : ""}`;
+    case "folder.download_selection": return `Downloaded a selection as zip (${x.files || 0} file(s) from ${x.folders || 0} folder(s) and ${x.selected_files || 0} selected file(s))`;
+    case "folder.download_all": return `Downloaded all files of folder "${x.folder || entityId}" as zip (${x.files || 0} file(s))`;
     case "folder.update": return `Updated folder "${x.name || entityId}"`;
     case "folder.rename": return `Renamed folder "${x.from || ""}" → "${x.to || ""}"`;
     case "folder.move": return `Moved folder "${x.name || entityId}"`;

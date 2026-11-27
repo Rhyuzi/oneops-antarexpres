@@ -130,11 +130,13 @@ async function main() {
   console.log(`autoFilter: ${JSON.stringify(ws.autoFilter)}`);
   console.log(`views    : ${JSON.stringify({ state: v.state, xSplit: v.xSplit, ySplit: v.ySplit, topLeftCell: v.topLeftCell })}`);
   console.log(`fills    : ${JSON.stringify({ "RESI JNE": fillOf("RESI JNE"), "TGL DROP": fillOf("TGL DROP"), "NAMA PENERIMA": fillOf("NAMA PENERIMA"), SS: fillOf("SS") })}`);
-  const ok = wb.worksheets.length === 1 && JSON.stringify(headers) === JSON.stringify(LOADER_JNE_34) &&
-    ws.autoFilter === `A1:AH${ws.rowCount}` && v.state === "frozen" && v.xSplit === 5 && v.ySplit === 1 &&
+  // 34 JNE columns in order, then the issue note column (KETERANGAN ISSUE / ISSUE NOTE).
+  const ok = wb.worksheets.length === 1 && JSON.stringify(headers.slice(0, 34)) === JSON.stringify(LOADER_JNE_34) &&
+    ["KETERANGAN ISSUE", "ISSUE NOTE"].includes(headers[34]) && headers.length === 35 &&
+    ws.autoFilter === `A1:AI${ws.rowCount}` && v.state === "frozen" && v.xSplit === 5 && v.ySplit === 1 &&
     fillOf("RESI JNE") === "FFBDD7EE";
   console.log(ok
-    ? "RESULT   : OK — 34 Loader JNE columns in order, one sheet, AutoFilter, frozen after RESI JNE, RESI JNE header blue."
+    ? "RESULT   : OK — 34 Loader JNE columns in order + KETERANGAN ISSUE, one sheet, AutoFilter, frozen after RESI JNE, RESI JNE header blue."
     : "RESULT   : NOT the Loader JNE layout — if this is --api, that server runs old code: restart it.");
   process.exit(ok ? 0 : 1);
 }

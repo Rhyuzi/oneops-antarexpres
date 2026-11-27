@@ -289,3 +289,53 @@ export function formatDate(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return String(iso)
   return formatDateTime(d) // locale-aware; parsing above is unchanged
 }
+
+// --- Folder actions: download all (zip) + bulk create from Excel --------------------------
+
+export interface DownloadAllSummary {
+  folder: string
+  files: number
+  bytes: number
+  folders: number
+  skippedFolders: number
+  tooLarge: boolean
+  filename: string
+}
+/** What "Download all" would put in the zip (permission-filtered, incl. sub-folders). */
+export async function getDownloadAllSummary(folderId: number): Promise<DownloadAllSummary> {
+  return (await axios.get(`/api/storage/folders/${folderId}/download-all/summary`)).data
+}
+/** Same-origin GET (session cookie): the browser streams the zip to disk. */
+export function downloadAllUrl(folderId: number): string {
+  return `/api/storage/folders/${folderId}/download-all`
+}
+
+export type BulkSkipReason = 'duplicate_in_file' | 'exists' | 'invalid'
+export interface BulkFolderResult {
+  sheet: string
+  total: number
+  created: Array<{ id: number; row: number; name: string }>
+  skipped: Array<{ row: number; name: string; reason: BulkSkipReason; firstRow?: number }>
+}
+/** Creates one folder per Excel row in `parentId` (null = root); duplicates are skipped. */
+export async function bulkCreateFolders(parentId: number | null, file: { name: string; data: string }): Promise<BulkFolderResult> {
+  return (await axios.post('/api/storage/folders/bulk', { parentId, file })).data
+}
+
+// --- Multi-selection download (folders + files of one view) -------------------------------
+
+export interface SelectionDownloadSummary { files: number; bytes: number; skippedFolders: number; tooLarge: boolean; filename: string }
+function selectionQuery(folderIds: number[], fileIds: number[], name: string): string {
+  const q = new URLSearchParams()
+  if (folderIds.length) q.set('folders', folderIds.join(','))
+  if (fileIds.length) q.set('files', fileIds.join(','))
+  if (name) q.set('name', name)
+  return q.toString()
+}
+export async function getSelectionDownloadSummary(folderIds: number[], fileIds: number[], name: string): Promise<SelectionDownloadSummary> {
+  return (await axios.get(`/api/storage/download-selection/summary?${selectionQuery(folderIds, fileIds, name)}`)).data
+}
+/** Same-origin GET (session cookie): the browser streams the zip to disk. */
+export function selectionDownloadUrl(folderIds: number[], fileIds: number[], name: string): string {
+  return `/api/storage/download-selection?${selectionQuery(folderIds, fileIds, name)}`
+}

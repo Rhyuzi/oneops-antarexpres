@@ -162,9 +162,8 @@ const SPACER_WIDTH = 3;
  * @param {string}   [sheet.freezeAfter]    freeze row 1 + every column up to this header
  * @param {boolean}  [sheet.autoFilter]     AutoFilter on the header row (A1 … last column)
  */
-function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFills = {}, spacerColumns = [], freezeAfter = null, autoFilter = false, highlightRows = null, emphasizeColumns = [], rowNotes = null }) {
-  // rowNotes: Map(0-based row index → text) — the issue reason, attached as a
-  // cell note to the first emphasized column (the resi) of that row.
+function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFills = {}, spacerColumns = [], freezeAfter = null, autoFilter = false, highlightRows = null, emphasizeColumns = [], centerColumns = [] }) {
+  const centered = new Set(centerColumns);
   // highlightRows: 0-based data row indexes painted with DUPLICATE_STYLE;
   // emphasizeColumns: headers whose cell is also bold on those rows (the resi).
   const highlight = highlightRows instanceof Set ? highlightRows : new Set(highlightRows || []);
@@ -198,9 +197,7 @@ function addStyledSheet(wb, { name, headers, rows, headerFill = null, headerFill
       cell.value = cellValue(header, raw);
       cell.font = FONT;
       cell.border = BORDER;
-      if (rowNotes && rowNotes.has(i) && header === emphasizeColumns[0]) {
-        cell.note = { texts: [{ text: rowNotes.get(i) }] };
-      }
+      if (centered.has(header)) cell.alignment = { horizontal: "center", vertical: "middle" };
       if (highlight.has(i) && !spacers.has(header)) {
         cell.fill = solid(DUPLICATE_STYLE.fill);
         cell.font = { ...FONT, color: { argb: DUPLICATE_STYLE.font }, bold: emphasize.has(header) };

@@ -165,6 +165,12 @@ async function presignDownload(objectKey, opts = {}) {
   });
 }
 
+/** Object body (readable stream) — server-side read for "Download all" (zip). */
+async function getObjectStream(objectKey) {
+  const out = await getClient().send(new GetObjectCommand({ Bucket: config.r2.bucketName, Key: objectKey }));
+  return out.Body;
+}
+
 async function deleteObject(objectKey) {
   await getClient().send(
     new DeleteObjectCommand({ Bucket: config.r2.bucketName, Key: objectKey })
@@ -200,6 +206,7 @@ module.exports = {
   objectExists,
   presignUpload,
   presignDownload,
+  getObjectStream,
   deleteObject,
   deletePrefix,
   buildObjectKey,

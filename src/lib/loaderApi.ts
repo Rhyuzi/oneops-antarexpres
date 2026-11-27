@@ -31,10 +31,14 @@ export interface LoaderReport {
   cod: number
   nonCod: number
   columns: string[]
-  weight: { conversion?: boolean; normalized: number; unchanged: number; belowThreshold: number; guardSkipped: number; invalid: ResiValue[] }
-  kodepos: { filled: number; missing: Array<{ kecamatan: string; count: number }>; ambiguous: Array<{ kecamatan: string; options: string[] }> }
+  weight: { conversion?: boolean; normalized: number; unchanged: number; belowThreshold: number; guardSkipped: number; zeroToOne?: number; invalid: ResiValue[] }
+  kodepos: { filled: number; fromTemplate?: number; fromAddress?: number; missing: Array<{ kecamatan: string; count: number }>; ambiguous: Array<{ kecamatan: string; options: string[] }> }
   phone: { fromRechecked: number; notInRechecked: string[]; normalized: number; invalid: ResiValue[] }
   nilaiBarangDefaulted: number
+  /** DESKRIPSI BARANG blank → "PAKET". */
+  deskripsiDefaulted?: number
+  /** Rows kept with an invalid / missing recipient phone (red + note in the file). */
+  phoneIssueRows?: number
   unknownCod: ResiValue[]
   negativeNilaiBarang: ResiValue[]
   invalidNumbers: ResiValue[]

@@ -810,6 +810,9 @@ onUnmounted(() => {
       <div class="space-y-1 text-xs text-slate-500">
         <p v-if="report.weight.conversion === false" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.convertWeightOffNote') }}</p>
         <p v-if="report.weight.guardSkipped" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.guardNote', { count: formatNumber(report.weight.guardSkipped) }) }}</p>
+        <p v-if="report.weight.zeroToOne" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.zeroToOneNote', { count: formatNumber(report.weight.zeroToOne) }) }}</p>
+        <p v-if="report.deskripsiDefaulted" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.deskripsiNote', { count: formatNumber(report.deskripsiDefaulted) }) }}</p>
+        <p v-if="report.kodepos.fromTemplate || report.kodepos.fromAddress" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.kodeposSourceNote', { template: formatNumber(report.kodepos.fromTemplate || 0), address: formatNumber(report.kodepos.fromAddress || 0) }) }}</p>
         <p v-if="report.nilaiBarangDefaulted" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.defaultedNote', { count: formatNumber(report.nilaiBarangDefaulted) }) }}</p>
         <p v-if="report.addressCleaned" class="flex items-center gap-1.5"><Info :size="13" /> {{ t('loader.addressCleanedNote', { count: formatNumber(report.addressCleaned) }) }}</p>
         <p v-if="report.sheets" class="flex items-start gap-1.5"><Info :size="13" class="mt-0.5 shrink-0" /> {{ t('loader.sheetsNote', { main: report.sheets[0], phone: report.senderPhone || '' }) }}</p>

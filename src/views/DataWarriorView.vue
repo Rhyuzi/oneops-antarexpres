@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
   ArrowUpDown,
   ChevronRight,
+  FileArchive,
+  FileSpreadsheet,
   FolderPlus,
   Folder,
   Grid3X3,
@@ -27,6 +29,22 @@ import FilePreviewModal from '../components/storage/FilePreviewModal.vue'
 import PermissionModal from '../components/storage/PermissionModal.vue'
 import ToastStack from '../components/storage/ToastStack.vue'
 import LoadingButton from '../components/LoadingButton.vue'
+import BulkFolderDialog from '../components/storage/BulkFolderDialog.vue'
+import {
+  clearSelection,
+  clickItem,
+  emptySelection,
+  modifiersOf,
+  moveActive,
+  selectAll,
+  selectAllState,
+  selectedInOrder,
+  syncSelection,
+  toggleActive,
+  toggleAll,
+  type NavKey,
+  type SelectionState,
+} from '../lib/selection'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
 import { formatNumber, t, tn, type MessageKey } from '../i18n'
 import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
@@ -34,7 +52,11 @@ import {
   deleteFile,
   deleteFolder,
   formatBytes,
+  downloadAllUrl,
   formatDate,
+  getDownloadAllSummary,
+  getSelectionDownloadSummary,
+  selectionDownloadUrl,
   getDownloadUrl,
   updateFile,
   updateFolder,
@@ -129,6 +151,211 @@ watch(searchInput, (q) => {
 function closeAllMenus(): void {
   openMenuId.value = null
 }
+
+// -- multi-select (folders + files of the view; rules in lib/selection.ts) ---------------
+const selection = ref<SelectionState>(emptySelection())
+const folderKey = (id: number) => `folder:${id}`
+const fileKey = (id: number) => `file:${id}`
+/** Display order: folders, then files (the same order as on screen, in both views). */
+const itemKeys = computed(() => [...visibleFolders.value.map((f) => folderKey(f.id)), ...store.state.files.map((f) => fileKey(f.id))])
+watch(itemKeys, (keys) => {
+  selection.value = syncSelection(selection.value, keys)
+})
+watch(
+  () => store.state.currentFolderId,
+  () => {
+    selection.value = emptySelection()
+  }
+)
+const isSelected = (key: string) => selection.value.selected.has(key)
+const isActive = (key: string) => selection.value.active !== null && itemKeys.value[selection.value.active] === key
+/** Roving tabindex: only the active item (or the first one) is in the Tab order. */
+const tabIndexOf = (key: string) => (isActive(key) || (selection.value.active === null && itemKeys.value[0] === key) ? 0 : -1)
+const allState = computed(() => selectAllState(selection.value, itemKeys.value))
+const selectedKeys = computed(() => selectedInOrder(selection.value, itemKeys.value))
+const selectedFolders = computed(() => visibleFolders.value.filter((f) => isSelected(folderKey(f.id))))
+const selectedFiles = computed(() => store.state.files.filter((f) => isSelected(fileKey(f.id))))
+const selectionCan = (cap: 'can_download' | 'can_move' | 'can_delete') =>
+  selectedKeys.value.length > 0 &&
+  selectedFolders.value.every((f) => f.permissions[cap]) &&
+  (!selectedFiles.value.length || Boolean(fileCaps.value?.[cap]))
+const canBulkDownload = computed(() => selectionCan('can_download'))
+const canBulkMove = computed(() => selectionCan('can_move'))
+const canBulkDelete = computed(() => selectionCan('can_delete'))
+
+function focusActive(): void {
+  const i = selection.value.active
+  if (i === null) return
+  const key = itemKeys.value[i]
+  void nextTick(() => {
+    const el = document.querySelector<HTMLElement>(`[data-item-key="${key}"]`)
+    el?.focus({ preventScroll: false })
+    el?.scrollIntoView({ block: 'nearest' })
+  })
+}
+/** Item click: plain / Ctrl·Cmd / Shift (see lib/selection.ts). */
+function onItemClick(e: MouseEvent, key: string): void {
+  closeAllMenus()
+  if (e.shiftKey) window.getSelection()?.removeAllRanges() // no text selection on Shift+click
+  selection.value = clickItem(selection.value, itemKeys.value, itemKeys.value.indexOf(key), modifiersOf(e))
+  focusActive()
+}
+/** Checkbox: toggles (like Ctrl/Cmd+click); Shift+checkbox selects a range. */
+function onCheckboxClick(e: MouseEvent, key: string): void {
+  const mods = modifiersOf(e)
+  selection.value = clickItem(selection.value, itemKeys.value, itemKeys.value.indexOf(key), { shift: mods.shift, ctrl: true })
+  focusActive()
+}
+function openItem(key: string): void {
+  const [kind, raw] = key.split(':')
+  const id = Number(raw)
+  if (kind === 'folder') void store.navigateTo(id)
+  else {
+    const file = store.state.files.find((f) => f.id === id)
+    if (file) previewFile.value = file
+  }
+}
+const NAV_KEYS: NavKey[] = ['ArrowUp', 'ArrowDown', 'Home', 'End']
+/** Keyboard on a focused item: arrows (+Shift / Ctrl·Cmd), Space, Enter, Ctrl/Cmd+A, Esc. */
+function onItemKeydown(e: KeyboardEvent): void {
+  const mods = modifiersOf(e)
+  if ((NAV_KEYS as string[]).includes(e.key)) {
+    e.preventDefault()
+    selection.value = moveActive(selection.value, itemKeys.value, e.key as NavKey, mods)
+    focusActive()
+  } else if (e.key === ' ') {
+    e.preventDefault()
+    selection.value = toggleActive(selection.value, itemKeys.value)
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    const i = selection.value.active
+    if (i !== null) openItem(itemKeys.value[i])
+  } else if (mods.ctrl && e.key.toLowerCase() === 'a') {
+    e.preventDefault()
+    selection.value = selectAll(selection.value, itemKeys.value)
+  } else if (e.key === 'Escape') {
+    selection.value = clearSelection(selection.value)
+  }
+}
+function onSelectAll(): void {
+  selection.value = toggleAll(selection.value, itemKeys.value)
+}
+function clearAll(): void {
+  selection.value = clearSelection(selection.value)
+}
+
+// -- bulk actions on the selection -----------------------------------------------------
+const bulkDeleteOpen = ref(false)
+const bulkMoveOpen = ref(false)
+const bulkMoveTarget = ref<number | null>(null)
+const bulkBusy = ref(false)
+
+/** Destinations for Move: every folder except the selected ones (and their sub-folders) and the current one. */
+const bulkMoveOptions = computed(() => {
+  const blocked = new Set(selectedFolders.value.map((f) => f.id))
+  const isInsideSelected = (id: number): boolean => {
+    let cur = store.state.folders.find((f) => f.id === id)
+    for (let guard = 0; cur && guard < 100; guard++) {
+      if (blocked.has(cur.id)) return true
+      cur = cur.parent_id ? store.state.folders.find((f) => f.id === cur!.parent_id) : undefined
+    }
+    return false
+  }
+  return store.state.folders.filter((f) => f.id !== store.state.currentFolderId && !isInsideSelected(f.id))
+})
+
+const bulkDownloadAction = useAsyncAction(async (): Promise<void> => {
+  if (selectedFiles.value.length === 1 && !selectedFolders.value.length) return download(selectedFiles.value[0])
+  const folderIds = selectedFolders.value.map((f) => f.id)
+  const fileIds = selectedFiles.value.map((f) => f.id)
+  const name = currentFolderName.value || t('storage.title')
+  try {
+    const s = await getSelectionDownloadSummary(folderIds, fileIds, name)
+    if (!s.files) return void store.toast('info', t('storage.selNothingToDownload'))
+    if (s.tooLarge) return void store.toast('error', t('storage.downloadAllTooLarge', { count: formatNumber(s.files), size: formatBytes(s.bytes) }), 8000)
+    const a = document.createElement('a')
+    a.href = selectionDownloadUrl(folderIds, fileIds, name)
+    a.download = s.filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    store.toast('success', t('storage.selDownloadStarted', { count: formatNumber(s.files), size: formatBytes(s.bytes) }), 6000)
+  } catch (err) {
+    store.toast('error', apiErrorMessage(err, 'storage.downloadAllFailed'))
+  }
+})
+
+async function runBulk(op: (kind: 'folder' | 'file', id: number) => Promise<unknown>): Promise<{ ok: number; failed: number }> {
+  let ok = 0
+  let failed = 0
+  bulkBusy.value = true
+  try {
+    for (const f of selectedFolders.value.slice()) {
+      try {
+        await op('folder', f.id)
+        ok++
+      } catch {
+        failed++
+      }
+    }
+    for (const f of selectedFiles.value.slice()) {
+      try {
+        await op('file', f.id)
+        ok++
+      } catch {
+        failed++
+      }
+    }
+  } finally {
+    bulkBusy.value = false
+  }
+  await Promise.all([store.refreshFolders(), store.refreshFiles()])
+  selection.value = clearSelection(selection.value)
+  return { ok, failed }
+}
+const bulkDeleteAction = useAsyncAction(async (): Promise<void> => {
+  const r = await runBulk((kind, id) => (kind === 'folder' ? deleteFolder(id) : deleteFile(id)))
+  bulkDeleteOpen.value = false
+  if (r.ok) store.toast('success', t('storage.selDeleteDone', { count: formatNumber(r.ok) }))
+  if (r.failed) store.toast('error', t('storage.selDeleteFailed', { count: formatNumber(r.failed) }), 8000)
+})
+const bulkMoveAction = useAsyncAction(async (): Promise<void> => {
+  const target = bulkMoveTarget.value
+  if (!target) return
+  const r = await runBulk((kind, id) => (kind === 'folder' ? updateFolder(id, { parentId: target }) : updateFile(id, { folderId: target })))
+  bulkMoveOpen.value = false
+  if (r.ok) store.toast('success', t('storage.selMoveDone', { count: formatNumber(r.ok) }))
+  if (r.failed) store.toast('error', t('storage.selMoveFailed', { count: formatNumber(r.failed) }), 8000)
+})
+
+// -- folder: download all (zip) / bulk create from Excel ---------------------------------
+const showBulkFolders = ref(false)
+const zipOps = useKeyedActions()
+
+/** Summary first (empty / too large → message), then the browser downloads the zip. */
+async function downloadAll(folderId: number): Promise<void> {
+  closeAllMenus()
+  try {
+    const s = await getDownloadAllSummary(folderId)
+    if (!s.files) return void store.toast('info', t('storage.downloadAllEmpty', { name: s.folder }))
+    if (s.tooLarge) {
+      return void store.toast('error', t('storage.downloadAllTooLarge', { count: formatNumber(s.files), size: formatBytes(s.bytes) }), 8000)
+    }
+    const a = document.createElement('a')
+    a.href = downloadAllUrl(folderId)
+    a.download = s.filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    store.toast('success', t('storage.downloadAllStarted', { name: s.folder, count: formatNumber(s.files), size: formatBytes(s.bytes) }), 6000)
+    if (s.skippedFolders) store.toast('info', t('storage.downloadAllSkipped', { count: formatNumber(s.skippedFolders) }), 6000)
+  } catch (err) {
+    store.toast('error', apiErrorMessage(err, 'storage.downloadAllFailed'))
+  }
+}
+const currentFolderName = computed(() =>
+  isRoot.value ? '' : store.state.folders.find((f) => f.id === store.state.currentFolderId)?.name ?? ''
+)
 
 // -- actions -----------------------------------------------------------------
 const createFolderAction = useAsyncAction(async (): Promise<void> => {
@@ -298,6 +525,23 @@ function folderMenuId(f: StorageFolder): string {
         >
           <FolderPlus :size="16" /> {{ t('storage.newFolder') }}
         </button>
+        <button
+          v-if="canCreateFolder"
+          class="btn btn-secondary"
+          data-testid="bulk-folders"
+          @click="showBulkFolders = true"
+        >
+          <FileSpreadsheet :size="16" /> {{ t('storage.bulkFolders') }}
+        </button>
+        <LoadingButton
+          v-if="!isRoot && currentPerms?.can_download"
+          class="btn btn-secondary"
+          data-testid="download-all-current"
+          :loading="zipOps.isPending(Number(store.state.currentFolderId), 'zip')"
+          @click="zipOps.run(Number(store.state.currentFolderId), 'zip', () => downloadAll(Number(store.state.currentFolderId)))"
+        >
+          <FileArchive :size="16" /> {{ t('storage.downloadAll') }}
+        </LoadingButton>
         <LoadingButton
           v-if="canUpload"
           class="btn btn-primary"
@@ -473,6 +717,61 @@ function folderMenuId(f: StorageFolder): string {
           </div>
 
           <template v-else>
+            <!-- Select all + bulk action bar (multi-select) -->
+            <div class="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2" :class="selectedKeys.length ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-white'" data-testid="selection-bar">
+              <label class="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  data-testid="select-all"
+                  :checked="allState === 'all'"
+                  :indeterminate="allState === 'some'"
+                  :aria-checked="allState === 'some' ? 'mixed' : allState === 'all'"
+                  @change="onSelectAll"
+                />
+                {{ t('storage.selAll') }}
+              </label>
+              <span v-if="selectedKeys.length" class="text-sm font-semibold text-indigo-800" data-testid="selected-count">
+                {{ t('storage.selCount', { count: formatNumber(selectedKeys.length) }) }}
+              </span>
+              <span v-else class="hidden text-xs text-slate-400 md:inline">{{ t('storage.selHint') }}</span>
+              <div v-if="selectedKeys.length" class="ml-auto flex flex-wrap items-center gap-2" data-testid="bulk-actions">
+                <LoadingButton
+                  class="btn btn-secondary px-3 py-1.5 text-sm"
+                  :loading="bulkDownloadAction.pending"
+                  :disabled="!canBulkDownload || bulkBusy"
+                  :title="canBulkDownload ? undefined : t('storage.selNotAllowed')"
+                  data-testid="bulk-download"
+                  @click="bulkDownloadAction.run()"
+                >
+                  <FileArchive :size="15" /> {{ t('storage.download') }}
+                </LoadingButton>
+                <button
+                  type="button"
+                  class="btn btn-secondary px-3 py-1.5 text-sm"
+                  :disabled="!canBulkMove || bulkBusy"
+                  :title="canBulkMove ? undefined : t('storage.selNotAllowed')"
+                  data-testid="bulk-move"
+                  @click="bulkMoveTarget = null; bulkMoveOpen = true"
+                >
+                  <FolderInput :size="15" /> {{ t('common.move') }}
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-secondary px-3 py-1.5 text-sm text-rose-600"
+                  :disabled="!canBulkDelete || bulkBusy"
+                  :title="canBulkDelete ? undefined : t('storage.selNotAllowed')"
+                  data-testid="bulk-delete"
+                  @click="bulkDeleteOpen = true"
+                >
+                  <Trash2 :size="15" /> {{ t('common.delete') }}
+                </button>
+                <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" data-testid="bulk-clear" @click="clearAll">
+                  <X :size="15" /> {{ t('storage.selClear') }}
+                </button>
+              </div>
+            </div>
+
             <!-- Folders section -->
             <div v-if="visibleFolders.length" class="mb-5">
               <p class="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -484,10 +783,26 @@ function folderMenuId(f: StorageFolder): string {
                 <div
                   v-for="folder in visibleFolders"
                   :key="folder.id"
-                  class="group relative flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-white p-3.5 transition hover:border-indigo-300 hover:shadow-sm"
+                  class="group relative flex cursor-pointer items-center gap-3 rounded-xl border p-3.5 transition hover:border-indigo-300 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
+                  :class="isSelected(folderKey(folder.id)) ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300' : 'border-slate-200 bg-white'"
+                  :data-item-key="folderKey(folder.id)"
+                  :data-selected="isSelected(folderKey(folder.id)) ? 'true' : undefined"
+                  :aria-selected="isSelected(folderKey(folder.id))"
+                  role="option"
+                  :tabindex="tabIndexOf(folderKey(folder.id))"
+                  @click="onItemClick($event, folderKey(folder.id))"
                   @dblclick="store.navigateTo(folder.id)"
-                  @click="store.navigateTo(folder.id)"
+                  @keydown="onItemKeydown"
                 >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                    tabindex="-1"
+                    :checked="isSelected(folderKey(folder.id))"
+                    :aria-label="t('storage.selItem', { name: folder.name })"
+                    @click.stop="onCheckboxClick($event, folderKey(folder.id))"
+                    @dblclick.stop
+                  />
                   <Folder :size="26" class="shrink-0 text-amber-500" />
                   <div class="min-w-0 flex-1">
                     <p class="truncate text-sm font-semibold text-slate-800">{{ folder.name }}</p>
@@ -515,6 +830,16 @@ function folderMenuId(f: StorageFolder): string {
                     >
                       <Folder :size="15" /> {{ t('common.open') }}
                     </button>
+                    <LoadingButton
+                      v-if="folder.permissions.can_download"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      :spinner-size="15"
+                      :loading="zipOps.isPending(folder.id, 'zip')"
+                      data-testid="download-all"
+                      @click="zipOps.run(folder.id, 'zip', () => downloadAll(folder.id))"
+                    >
+                      <FileArchive :size="15" /> {{ t('storage.downloadAll') }}
+                    </LoadingButton>
                     <button
                       v-if="folder.permissions.can_rename"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
@@ -557,9 +882,26 @@ function folderMenuId(f: StorageFolder): string {
                 <div
                   v-for="folder in visibleFolders"
                   :key="folder.id"
-                  class="group flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-0 hover:bg-slate-50"
-                  @click="store.navigateTo(folder.id)"
+                  class="group flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
+                  :class="isSelected(folderKey(folder.id)) ? 'bg-indigo-50' : 'hover:bg-slate-50'"
+                  :data-item-key="folderKey(folder.id)"
+                  :data-selected="isSelected(folderKey(folder.id)) ? 'true' : undefined"
+                  :aria-selected="isSelected(folderKey(folder.id))"
+                  role="option"
+                  :tabindex="tabIndexOf(folderKey(folder.id))"
+                  @click="onItemClick($event, folderKey(folder.id))"
+                  @dblclick="store.navigateTo(folder.id)"
+                  @keydown="onItemKeydown"
                 >
+                  <input
+                    type="checkbox"
+                    class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                    tabindex="-1"
+                    :checked="isSelected(folderKey(folder.id))"
+                    :aria-label="t('storage.selItem', { name: folder.name })"
+                    @click.stop="onCheckboxClick($event, folderKey(folder.id))"
+                    @dblclick.stop
+                  />
                   <Folder :size="20" class="shrink-0 text-amber-500" />
                   <p class="min-w-0 flex-1 truncate text-sm font-semibold text-slate-800">{{ folder.name }}</p>
                   <p class="hidden text-xs text-slate-400 sm:block">{{ formatDate(folder.created_at) }}</p>
@@ -584,11 +926,27 @@ function folderMenuId(f: StorageFolder): string {
                 <div
                   v-for="file in store.state.files"
                   :key="file.id"
-                  class="group relative flex cursor-pointer flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3.5 transition hover:border-indigo-300 hover:shadow-sm"
+                  class="group relative flex cursor-pointer flex-col gap-2 rounded-xl border p-3.5 transition hover:border-indigo-300 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
+                  :class="isSelected(fileKey(file.id)) ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300' : 'border-slate-200 bg-white'"
+                  :data-item-key="fileKey(file.id)"
+                  :data-selected="isSelected(fileKey(file.id)) ? 'true' : undefined"
+                  :aria-selected="isSelected(fileKey(file.id))"
+                  role="option"
+                  :tabindex="tabIndexOf(fileKey(file.id))"
+                  @click="onItemClick($event, fileKey(file.id))"
                   @dblclick="previewFile = file"
-                  @click="previewFile = file"
+                  @keydown="onItemKeydown"
                 >
                   <div class="flex items-start gap-2.5">
+                    <input
+                      type="checkbox"
+                      class="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                      tabindex="-1"
+                      :checked="isSelected(fileKey(file.id))"
+                      :aria-label="t('storage.selItem', { name: file.file_name })"
+                      @click.stop="onCheckboxClick($event, fileKey(file.id))"
+                      @dblclick.stop
+                    />
                     <FileIcon :extension="file.file_extension" :size="24" />
                     <div class="min-w-0 flex-1">
                       <p class="truncate text-sm font-semibold text-slate-800" :title="file.file_name">
@@ -676,10 +1034,28 @@ function folderMenuId(f: StorageFolder): string {
                     <tr
                       v-for="file in store.state.files"
                       :key="file.id"
-                      class="group border-b border-slate-100 last:border-0 hover:bg-slate-50"
+                      class="group cursor-pointer border-b border-slate-100 last:border-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
+                      :class="isSelected(fileKey(file.id)) ? 'bg-indigo-50' : 'hover:bg-slate-50'"
+                      :data-item-key="fileKey(file.id)"
+                      :data-selected="isSelected(fileKey(file.id)) ? 'true' : undefined"
+                      :aria-selected="isSelected(fileKey(file.id))"
+                      role="option"
+                      :tabindex="tabIndexOf(fileKey(file.id))"
+                      @click="onItemClick($event, fileKey(file.id))"
+                      @dblclick="previewFile = file"
+                      @keydown="onItemKeydown"
                     >
-                      <td class="cursor-pointer px-4 py-2.5" @click="previewFile = file">
+                      <td class="px-4 py-2.5">
                         <div class="flex items-center gap-2.5">
+                          <input
+                            type="checkbox"
+                            class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                            tabindex="-1"
+                            :checked="isSelected(fileKey(file.id))"
+                            :aria-label="t('storage.selItem', { name: file.file_name })"
+                            @click.stop="onCheckboxClick($event, fileKey(file.id))"
+                            @dblclick.stop
+                          />
                           <FileIcon :extension="file.file_extension" />
                           <span class="max-w-[280px] truncate font-medium text-slate-800" :title="file.file_name">
                             {{ file.file_name }}
@@ -871,6 +1247,51 @@ function folderMenuId(f: StorageFolder): string {
         </div>
       </div>
     </Teleport>
+
+    <!-- Bulk delete (selection) -->
+    <Teleport to="body">
+      <div v-if="bulkDeleteOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="bulkDeleteOpen = false">
+        <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" role="dialog" data-testid="bulk-delete-dialog">
+          <h3 class="section-title mb-2">{{ t('storage.selDeleteTitle', { count: formatNumber(selectedKeys.length) }) }}</h3>
+          <p class="mb-4 text-sm text-slate-600">{{ t('storage.selDeleteBody') }}</p>
+          <div class="flex justify-end gap-3">
+            <button class="btn btn-secondary" :disabled="bulkDeleteAction.pending" @click="bulkDeleteOpen = false">{{ t('common.cancel') }}</button>
+            <LoadingButton class="btn bg-rose-600 text-white hover:bg-rose-700" :loading="bulkDeleteAction.pending" data-testid="bulk-delete-confirm" @click="bulkDeleteAction.run()">
+              {{ t('common.delete') }}
+            </LoadingButton>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk move (selection) -->
+    <Teleport to="body">
+      <div v-if="bulkMoveOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="bulkMoveOpen = false">
+        <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" role="dialog" data-testid="bulk-move-dialog">
+          <h3 class="section-title mb-4">{{ t('storage.selMoveTitle', { count: formatNumber(selectedKeys.length) }) }}</h3>
+          <label class="label" for="bulk-move-target">{{ t('storage.selMoveTo') }}</label>
+          <select id="bulk-move-target" v-model="bulkMoveTarget" class="input">
+            <option :value="null" disabled>{{ t('storage.selMoveChoose') }}</option>
+            <option v-for="f in bulkMoveOptions" :key="f.id" :value="f.id">{{ f.name }}</option>
+          </select>
+          <div class="mt-4 flex justify-end gap-3">
+            <button class="btn btn-secondary" :disabled="bulkMoveAction.pending" @click="bulkMoveOpen = false">{{ t('common.cancel') }}</button>
+            <LoadingButton class="btn btn-primary" :loading="bulkMoveAction.pending" :disabled="!bulkMoveTarget" data-testid="bulk-move-confirm" @click="bulkMoveAction.run()">
+              {{ t('common.move') }}
+            </LoadingButton>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Bulk create folders from Excel -->
+    <BulkFolderDialog
+      v-if="showBulkFolders"
+      :parent-id="isRoot ? null : Number(store.state.currentFolderId)"
+      :parent-name="currentFolderName"
+      @close="showBulkFolders = false"
+      @done="store.refreshFolders()"
+    />
 
     <!-- Rename folder -->
     <Teleport to="body">

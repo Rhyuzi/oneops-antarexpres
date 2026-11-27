@@ -3,7 +3,9 @@
 Turns the 3PL template export + the recipients' phone numbers into one
 `.xlsx` with **one sheet, `LOADER JNE`**: the **Loader JNE layout**, i.e.
 exactly the 34 columns, in order, of the Data Warrior sheets "Sukaraja" /
-"Loader Rajapolah  Ciawi" (see [below](#result-3pl--data-warrior-jne-layout)).
+"Loader Rajapolah  Ciawi" (see [below](#result-3pl--data-warrior-jne-layout)),
+followed by one extra column, **KETERANGAN ISSUE**, at the edge (why a resi is red;
+empty for valid rows — see [Issue notes](#issue-notes-keterangan-issue--column-keterangan-issue)).
 The same file is produced by file mode, API jobs and history re-downloads.
 
 The rules below first build intermediate rows (the "TAMPILAN FINAL" shape:
@@ -193,28 +195,39 @@ Every occurrence is listed with its **Excel row**.
 | Export | every row is kept; duplicate rows are painted **red**: fill `FFC7CE`, dark red text `9C0006`, red borders, bold NO RESI SICEPAT / ORDER ID. NO RESI SICEPAT and ORDER ID are written as clean digits (hidden characters removed) |
 | Result | `report.duplicateResi` (+ `highlighted` rows) is shown as a red panel. The rechecked file's own duplicates (first non-empty number wins) appear in `report.rechecked.duplicateResi`. Job history stores counts only |
 
-### Issue notes ("keterangan issue")
+### Issue notes ("keterangan issue") — column KETERANGAN ISSUE
 
-Every red resi carries its reason (`server/loader/resiIssues.js`; the texts
-are in the language picked in the app — `loader.resiIssue.*`, mirrored by
-`TEXT` on the server):
+Every red resi carries its reason in an extra column at the edge of the
+Loader JNE file: **column 35, right after CUSTOMER ID** (`KETERANGAN ISSUE`, or
+`ISSUE NOTE` in English; red header; included in the AutoFilter). The 34 JNE
+columns in front are unchanged. Valid, unique rows look normal and keep the
+note empty, so the column can be filtered. The texts follow the language picked
+in the app (`loader.resiIssue.*`, mirrored by `TEXT` in `server/loader/resiIssues.js`).
+
+Rule: the resi is `trim()`med (outer spaces, tabs, line breaks, NBSP), then must
+match `/^\d+$/`. The resi is written to the file trimmed, otherwise as typed.
 
 | Issue | Note (ID / EN) |
 |---|---|
-| Resi double | `Resi double (baris 26, 49)` / `Duplicate resi (rows 26, 49)` — every twin row |
-| Visible non-digit characters | `Karakter tidak valid: !, ? (hanya boleh angka)` / `Invalid characters: !, ? (digits only)` |
-| Both | the reasons joined with `; ` |
-| Valid, unique | empty (filterable) |
+| Resi double | `Resi double (baris 26, 49)` / `Duplicate resi (rows 26, 49)` — every twin row (compared on the digits) |
+| Invalid characters (`!`, `?`, `/`, letters, a space inside, invisible characters) | `Karakter tidak valid: !, ? (hanya boleh angka)` / `Invalid characters: !, ? (digits only)`; a space is named `spasi` / `space`, invisible characters by code point (`U+200B`) |
+| Both | the reasons joined with ` \| ` |
+| Valid, unique | empty |
 
-Hidden characters (spaces, NBSP, zero-width characters, a leading `'`, a
-trailing `.0`) are cleaned and are **not** issues.
+The template pre-check covers both issue types. `INVALID_RESI` is a warning,
+and the file-mode 409 is `RESI_ISSUES` with `details.resiIssues.rows = [{ row, resi, issues }]`.
+The red panel on the page shows Row · Resi · Issue note in the same words.
 
-- The template pre-check covers both issue types: `INVALID_RESI`
-  is a new warning, and the file-mode 409 is now `RESI_ISSUES` with
-  `details.resiIssues.rows = [{ row, resi, issues }]`. The red panel shows Row ·
-  Resi · Issue note. In the Loader JNE file the 34 columns are unchanged: issue
-  rows are red, and the reason is a **cell note** on NO RESI SICEPAT, in the
-  request's `locale`.
+## Row fixes and styling (Loader JNE file)
+
+| Point | Behaviour |
+|---|---|
+| Berat 0 / empty | becomes **1** (switch on or off), counted as `report.weight.zeroToOne`. It is the only case where Berat goes up, and the value never comes from Berat Asli, so the "Berat Asli > Berat" guard still holds. Non-numeric Berat is still reported, not replaced |
+| Invalid / missing recipient phone | the row **stays** in the file, is painted red and gets `No HP penerima tidak valid` / `No HP penerima kosong` (EN: *Invalid recipient phone number* / *Recipient phone number missing*) in KETERANGAN ISSUE, joined with the resi notes by ` \| `. The result page also lists them (`warnPhoneInvalid`); `report.phoneIssueRows` counts them |
+| DESKRIPSI BARANG blank (null, empty, spaces) | **PAKET** (`report.deskripsiDefaulted`) |
+| Alignment | data cells of **TGL DROP**, **CATEGORY**, **KOTA PENGIRIM** and **NAMA PENGIRIM** are centred (`JNE_SHEET_STYLE.centerColumns`) |
+| TGL DROP | an Excel **Date** (UTC midnight of the day), `numFmt` `dd/mm/yyyy`, centred |
+| KODE POS PENERIMA | 1) the template's own kodepos column (`Kode Pos` / `Kodepos` / `Kode Pos Tujuan` / `Kodepos Penerima`, 5 digits); 2) the kecamatan reference (with the wilayah scope), also for spellings like *Cihideung, Kota Tasikmalaya* or *Kawalu Kota Tasikmalaya*; 3) a 5-digit kodepos in **Alamat Penerima**, used only when it settles an ambiguous kecamatan or exists in the reference. Counts: `report.kodepos.fromTemplate` / `fromAddress` |
 
 ## Empty data warnings
 
