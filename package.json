@@ -11,7 +11,7 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test": "node tests/test-core.js && node tests/test-audit.js && node tests/test-i18n.js && node tests/test-loader.js && node tests/test-phone.js && node tests/test-master-data.js && node tests/test-account-self.js && node tests/test-wilayah.js && node tests/test-duplicates.js && node tests/test-resi-issues.js && node tests/test-loader-enhancements.js && node tests/test-folder-actions.js && node tests/test-selection.js",
+    "test": "node tests/test-core.js && node tests/test-audit.js && node tests/test-i18n.js && node tests/test-loader.js && node tests/test-phone.js && node tests/test-master-data.js && node tests/test-account-self.js && node tests/test-wilayah.js && node tests/test-duplicates.js && node tests/test-resi-issues.js && node tests/test-loader-enhancements.js && node tests/test-folder-actions.js && node tests/test-selection.js && node tests/test-folder-tree.js",
     "r2:check": "node server/scripts/r2-check.js",
     "hash-password": "node server/scripts/hash-password.js",
     "loader:import": "node server/scripts/import-kebutuhan-loader.js",

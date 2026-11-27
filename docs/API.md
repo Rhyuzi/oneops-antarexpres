@@ -32,6 +32,16 @@ browser sends it automatically; API clients must capture and replay the
 
 POST body: `{name, description?, parentId?}`.
 
+**Move** (`PUT /folders/:id {parentId}`, `PUT /files/:id {folderId}`) refuses:
+
+- the current location: 400 `SAME_LOCATION`;
+- a folder into itself or one of its sub-folders: 400;
+- a folder to Root by a non Super Admin: 403 `ROOT_ADMIN_ONLY`;
+- a folder name that already exists at the destination: 409 `NAME_EXISTS`;
+- a file to Root: 400.
+
+Audit rows `folder.move` / `file.move` keep `from_path` / `to_path` (`Root / 2026 / November`) plus `before.path` / `after.path`. The UI Move dialog (`src/components/storage/MoveDialog.vue`, rules in `src/lib/folderTree.ts`) shows a folder tree, collapsed from Root, with expand/collapse per level, search with parent paths and auto-expanded ancestors, and a live full-path preview. It disables the same targets: the moved folders and their sub-folders, the current location, Root where not allowed, and folders without the create/upload right. `GET /folders/:id` returns the breadcrumb top level → folder.
+
 ### Folder actions
 
 | Method | Path | Notes |

@@ -85,6 +85,16 @@ function extractExtension(name) {
   return m ? m[1] : "";
 }
 
+/** "Root / 2026 / November" — readable folder path for audit rows (null = Root). */
+async function folderPathText(id) {
+  if (id === null || id === undefined) return "Root";
+  const chain = await getFolderChain(Number(id)); // folder → … → top level
+  if (!chain.length) return "Root";
+  const rows = await query(`SELECT id, name FROM storage_folders WHERE id IN (${chain.map(() => "?").join(",")})`, chain);
+  const byId = new Map(rows.map((r) => [Number(r.id), r.name]));
+  return ["Root", ...chain.slice().reverse().map((i) => byId.get(i))].join(" / ");
+}
+
 async function folderExists(id) {
   const rows = await query(
     "SELECT id FROM storage_folders WHERE id = ? AND deleted_at IS NULL LIMIT 1",
@@ -597,7 +607,10 @@ router.get("/folders/:id", async (req, res) => {
     return res.json({
       ok: true,
       folder: { ...rows[0], permissions: perms },
+      // getFolderChain is folder → top level; the breadcrumb reads top level → folder.
       breadcrumb: chain
+        .slice()
+        .reverse()
         .map((fid) => byId.get(fid))
         .filter(Boolean)
         .map((f) => ({ id: Number(f.id), name: f.name })),
@@ -619,9 +632,20 @@ router.put("/folders/:id", async (req, res) => {
     if (!existing) return res.status(404).json({ ok: false, message: "Folder not found." });
 
     let moved = false;
+    let fromPath = null;
+    let toPath = null;
     if (parentId !== undefined) {
       const newParent = isRoot(parentId) ? null : Number(parentId);
+      const currentParent = existing.parent_id ? Number(existing.parent_id) : null;
       await authorizeFolder(req.user, id, "can_move");
+      // Same rules as the Move dialog (lib/folderTree.ts): not the current location,
+      // not itself / a sub-folder, Root only for Super Admin, no name clash.
+      if (newParent === currentParent) {
+        return res.status(400).json({ ok: false, code: "SAME_LOCATION", message: "The item is already in that folder." });
+      }
+      if (newParent === null && !req.user.roles.includes("super_admin")) {
+        return res.status(403).json({ ok: false, code: "ROOT_ADMIN_ONLY", message: "Only Super Admin can move folders to the root." });
+      }
       if (newParent !== null) {
         if (!(await folderExists(newParent))) {
           return res.status(400).json({ ok: false, message: "Target folder does not exist." });
@@ -637,7 +661,16 @@ router.put("/folders/:id", async (req, res) => {
         // Requires create-folder permission on the destination.
         await authorizeFolder(req.user, newParent, "can_create_folder");
       }
-      moved = newParent !== (existing.parent_id ? Number(existing.parent_id) : null);
+      const clash = await query(
+        `SELECT id FROM storage_folders WHERE parent_id ${newParent === null ? "IS NULL" : "= ?"} AND name = ? AND deleted_at IS NULL AND id != ? LIMIT 1`,
+        newParent === null ? [existing.name, id] : [newParent, existing.name, id]
+      );
+      if (clash.length) {
+        return res.status(409).json({ ok: false, code: "NAME_EXISTS", message: "A folder with that name already exists in the target folder." });
+      }
+      moved = true;
+      fromPath = await folderPathText(currentParent);
+      toPath = await folderPathText(newParent);
     }
 
     let renamed = false;
@@ -692,9 +725,9 @@ router.put("/folders/:id", async (req, res) => {
         req,
         userId: req.user.id, action: ACTIONS.FOLDER_MOVE, entityType: "folder",
         entityId: id,
-        before: { parent_id: existing.parent_id ? Number(existing.parent_id) : null },
-        after: { parent_id: isRoot(parentId) ? null : Number(parentId) },
-        metadata: { name: renamed ? name.trim() : existing.name }, ip: clientIp(req),
+        before: { parent_id: existing.parent_id ? Number(existing.parent_id) : null, path: `${fromPath} / ${existing.name}` },
+        after: { parent_id: isRoot(parentId) ? null : Number(parentId), path: `${toPath} / ${renamed ? name.trim() : existing.name}` },
+        metadata: { name: renamed ? name.trim() : existing.name, from_path: fromPath, to_path: toPath }, ip: clientIp(req),
       });
     }
     // Description edits are metadata changes too (previously unaudited).
@@ -1352,6 +1385,9 @@ router.put("/files/:id", async (req, res) => {
       if (target === null) {
         return res.status(400).json({ ok: false, message: "Files cannot be moved to the virtual root." });
       }
+      if (target === Number(existing.folder_id)) {
+        return res.status(400).json({ ok: false, code: "SAME_LOCATION", message: "The item is already in that folder." });
+      }
       await authorizeFolder(req.user, target, "can_upload");
       if (!(await folderExists(target))) {
         return res.status(400).json({ ok: false, message: "Target folder does not exist." });
@@ -1363,13 +1399,16 @@ router.put("/files/:id", async (req, res) => {
       if (dupe.length) {
         return res.status(409).json({ ok: false, message: "A file with that name already exists in the target folder." });
       }
+      const fromPath = await folderPathText(Number(existing.folder_id));
+      const toPath = await folderPathText(target);
       await query("UPDATE storage_files SET folder_id = ? WHERE id = ?", [target, id]);
       await logAudit({
         req,
         userId: req.user.id, action: ACTIONS.FILE_MOVE, entityType: "file",
         entityId: id,
-        before: { folder_id: Number(existing.folder_id) }, after: { folder_id: target },
-        metadata: { file_name: existing.file_name }, ip: clientIp(req),
+        before: { folder_id: Number(existing.folder_id), path: `${fromPath} / ${existing.file_name}` },
+        after: { folder_id: target, path: `${toPath} / ${existing.file_name}` },
+        metadata: { file_name: existing.file_name, from_path: fromPath, to_path: toPath }, ip: clientIp(req),
       });
     }
 

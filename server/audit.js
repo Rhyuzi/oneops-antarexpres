@@ -268,14 +268,14 @@ function describe(action, d, entityId) {
     case "folder.download_all": return `Downloaded all files of folder "${x.folder || entityId}" as zip (${x.files || 0} file(s))`;
     case "folder.update": return `Updated folder "${x.name || entityId}"`;
     case "folder.rename": return `Renamed folder "${x.from || ""}" → "${x.to || ""}"`;
-    case "folder.move": return `Moved folder "${x.name || entityId}"`;
+    case "folder.move": return x.to_path ? `Moved folder "${x.name || entityId}" from "${x.from_path}" to "${x.to_path}"` : `Moved folder "${x.name || entityId}"`;
     case "folder.delete": return `Deleted folder "${x.name || entityId}"${x.folders_deleted ? ` (${x.folders_deleted} folder(s) incl. subfolders)` : ""}`;
     case "permission.update": return `Changed folder permissions of "${x.folder || entityId}"`;
     case "file.upload": return `Uploaded "${x.file_name || entityId}"`;
     case "file.download": return `Downloaded "${x.file_name || entityId}"`;
     case "file.preview": return `Previewed "${x.file_name || entityId}"`;
     case "file.rename": return `Renamed file "${x.from || ""}" → "${x.to || ""}"`;
-    case "file.move": return `Moved file "${x.file_name || entityId}"`;
+    case "file.move": return x.to_path ? `Moved file "${x.file_name || entityId}" from "${x.from_path}" to "${x.to_path}"` : `Moved file "${x.file_name || entityId}"`;
     case "file.delete": return `Deleted file "${x.file_name || entityId}"`;
     case "recheck.credentials_rejected": return `SiCepat rejected the configured credentials (HTTP ${x.upstream_status || "?"})`;
     case "loader.resi_checked": return `Checked resi list${x.file ? ` "${x.file}"` : ""}${x.rows !== undefined ? ` (${x.rows} resi, ${x.with_issues || 0} with issues)` : ""}`;

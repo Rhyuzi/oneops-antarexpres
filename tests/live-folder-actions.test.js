@@ -197,6 +197,48 @@ async function main() {
       assert.deepStrictEqual([r.status, r.json.code], [404, "FOLDER_EMPTY"]);
     });
 
+    await test("move: same location, into itself / a sub-folder and name clashes are refused; success audited with both paths", async () => {
+      const R = `e2e-zip-${SUFFIX}`;
+      // Folder already in that parent → 400 SAME_LOCATION (folder and file).
+      let r = await request("PUT", `/api/storage/folders/${sub}`, { parentId: root });
+      assert.deepStrictEqual([r.status, r.json.code], [400, "SAME_LOCATION"]);
+      const [aFile] = await query("SELECT id FROM storage_files WHERE folder_id = ? AND file_name = 'a.txt'", [root]);
+      r = await request("PUT", `/api/storage/files/${aFile.id}`, { folderId: root });
+      assert.deepStrictEqual([r.status, r.json.code], [400, "SAME_LOCATION"]);
+      // Into itself / its own sub-folder.
+      const deep = await addFolder("Deep", sub);
+      assert.strictEqual((await request("PUT", `/api/storage/folders/${sub}`, { parentId: sub })).status, 400);
+      r = await request("PUT", `/api/storage/folders/${sub}`, { parentId: deep });
+      assert.deepStrictEqual([r.status, r.json.message], [400, "Cannot move a folder into itself or its own subfolder."]);
+      // A folder with the same name already in the destination → 409.
+      const clash = await addFolder("Sub", secret);
+      r = await request("PUT", `/api/storage/folders/${sub}`, { parentId: secret });
+      assert.deepStrictEqual([r.status, r.json.code], [409, "NAME_EXISTS"]);
+      await query("DELETE FROM storage_folders WHERE id = ?", [clash]);
+      // Success: Sub (with Deep) → Secret; audit keeps the readable paths.
+      r = await request("PUT", `/api/storage/folders/${sub}`, { parentId: secret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+      await new Promise((res) => setTimeout(res, 100));
+      let a = await lastAudit("folder.move");
+      let m = typeof a.metadata === "string" ? JSON.parse(a.metadata) : a.metadata;
+      assert.deepStrictEqual([m.details.from_path, m.details.to_path], [`Root / ${R}`, `Root / ${R} / Secret`]);
+      assert.deepStrictEqual([m.before.path, m.after.path], [`Root / ${R} / Sub`, `Root / ${R} / Secret / Sub`]);
+      assert.strictEqual(m.description, `Moved folder "Sub" from "Root / ${R}" to "Root / ${R} / Secret"`);
+      // Breadcrumb reads top level → folder (was reversed before).
+      const crumb = await request("GET", `/api/storage/folders/${deep}`);
+      assert.deepStrictEqual(crumb.json.breadcrumb.map((b) => b.name), [R, "Secret", "Sub", "Deep"]);
+      // File move into the moved folder: paths reflect the new structure.
+      r = await request("PUT", `/api/storage/files/${aFile.id}`, { folderId: deep });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+      await new Promise((res) => setTimeout(res, 100));
+      a = await lastAudit("file.move");
+      m = typeof a.metadata === "string" ? JSON.parse(a.metadata) : a.metadata;
+      assert.deepStrictEqual([m.details.from_path, m.details.to_path], [`Root / ${R}`, `Root / ${R} / Secret / Sub / Deep`]);
+      // Put everything back for the next tests.
+      assert.strictEqual((await request("PUT", `/api/storage/files/${aFile.id}`, { folderId: root })).status, 200);
+      assert.strictEqual((await request("PUT", `/api/storage/folders/${sub}`, { parentId: root })).status, 200);
+    });
+
     await test("download all respects folder permissions: a sub-folder without download right is left out", async () => {
       const roleId = Number((await query("INSERT INTO roles (name, description, is_active) VALUES (?, 'e2e', 1)", [`e2e_zip_${SUFFIX}`])).insertId);
       created.role = roleId;
@@ -220,6 +262,12 @@ async function main() {
       // Bulk create needs can_create_folder on the parent.
       assert.strictEqual((await request("POST", "/api/storage/folders/bulk", { parentId: root, file: xlsxPayload([["X"]]) })).status, 403);
       assert.strictEqual((await request("POST", "/api/storage/folders/bulk", { parentId: null, file: xlsxPayload([["X"]]) })).status, 403, "root: super admin only");
+      // Moving a folder to Root is Super Admin only (the tree shows Root disabled for others).
+      await query("UPDATE storage_folder_permissions SET can_view = 1 WHERE folder_id = ? AND role_id = ?", [root, created.role]);
+      const [{ id: mv }] = await query("SELECT id FROM storage_folders WHERE parent_id = ? AND name = 'Garut' AND deleted_at IS NULL", [root]);
+      await query("INSERT INTO storage_folder_permissions (folder_id, role_id, can_view, can_move) VALUES (?, ?, 1, 1)", [mv, created.role]);
+      const toRoot = await request("PUT", `/api/storage/folders/${mv}`, { parentId: null });
+      assert.deepStrictEqual([toRoot.status, toRoot.json.code], [403, "ROOT_ADMIN_ONLY"]);
     });
   } finally {
     currentUser = null;

@@ -30,6 +30,8 @@ import PermissionModal from '../components/storage/PermissionModal.vue'
 import ToastStack from '../components/storage/ToastStack.vue'
 import LoadingButton from '../components/LoadingButton.vue'
 import BulkFolderDialog from '../components/storage/BulkFolderDialog.vue'
+import MoveDialog from '../components/storage/MoveDialog.vue'
+import type { MoveContext } from '../lib/folderTree'
 import {
   clearSelection,
   clickItem,
@@ -74,11 +76,9 @@ const newFolderDesc = ref('')
 const renameTarget = ref<StorageFolder | null>(null)
 const renameValue = ref('')
 const moveTarget = ref<StorageFolder | null>(null)
-const moveParentId = ref<number | null>(null)
 const fileRenameTarget = ref<StorageFile | null>(null)
 const fileRenameValue = ref('')
 const fileMoveTarget = ref<StorageFile | null>(null)
-const fileMoveFolderId = ref<number | null>(null)
 const fileDeleteTarget = ref<StorageFile | null>(null)
 const folderDeleteTarget = ref<StorageFolder | null>(null)
 const previewFile = ref<StorageFile | null>(null)
@@ -247,21 +247,20 @@ function clearAll(): void {
 // -- bulk actions on the selection -----------------------------------------------------
 const bulkDeleteOpen = ref(false)
 const bulkMoveOpen = ref(false)
-const bulkMoveTarget = ref<number | null>(null)
 const bulkBusy = ref(false)
 
-/** Destinations for Move: every folder except the selected ones (and their sub-folders) and the current one. */
-const bulkMoveOptions = computed(() => {
-  const blocked = new Set(selectedFolders.value.map((f) => f.id))
-  const isInsideSelected = (id: number): boolean => {
-    let cur = store.state.folders.find((f) => f.id === id)
-    for (let guard = 0; cur && guard < 100; guard++) {
-      if (blocked.has(cur.id)) return true
-      cur = cur.parent_id ? store.state.folders.find((f) => f.id === cur!.parent_id) : undefined
-    }
-    return false
-  }
-  return store.state.folders.filter((f) => f.id !== store.state.currentFolderId && !isInsideSelected(f.id))
+/**
+ * Move dialog context (lib/folderTree.ts): what is moved, where it is now.
+ * The picker disables the moved folders, their sub-folders, the current
+ * location and folders without the needed permission.
+ */
+function moveCtx(movingFolderIds: number[], movingFiles: boolean, sourceParentIds: Array<number | null>): MoveContext {
+  return { folders: store.state.folders, movingFolderIds, movingFiles, sourceParentIds, isSuperAdmin: auth.isSuperAdmin }
+}
+const currentParentId = computed<number | null>(() => (isRoot.value ? null : Number(store.state.currentFolderId)))
+const bulkMoveSubject = computed(() => {
+  const names = [...selectedFolders.value.map((f) => f.name), ...selectedFiles.value.map((f) => f.file_name)]
+  return names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} +${names.length - 3}`
 })
 
 const bulkDownloadAction = useAsyncAction(async (): Promise<void> => {
@@ -319,10 +318,8 @@ const bulkDeleteAction = useAsyncAction(async (): Promise<void> => {
   if (r.ok) store.toast('success', t('storage.selDeleteDone', { count: formatNumber(r.ok) }))
   if (r.failed) store.toast('error', t('storage.selDeleteFailed', { count: formatNumber(r.failed) }), 8000)
 })
-const bulkMoveAction = useAsyncAction(async (): Promise<void> => {
-  const target = bulkMoveTarget.value
-  if (!target) return
-  const r = await runBulk((kind, id) => (kind === 'folder' ? updateFolder(id, { parentId: target }) : updateFile(id, { folderId: target })))
+const bulkMoveAction = useAsyncAction(async (target: number | null): Promise<void> => {
+  const r = await runBulk((kind, id) => (kind === 'folder' ? updateFolder(id, { parentId: target }) : updateFile(id, { folderId: target as number })))
   bulkMoveOpen.value = false
   if (r.ok) store.toast('success', t('storage.selMoveDone', { count: formatNumber(r.ok) }))
   if (r.failed) store.toast('error', t('storage.selMoveFailed', { count: formatNumber(r.failed) }), 8000)
@@ -377,10 +374,9 @@ function doRenameFolder(): void {
   })
 }
 
-function doMoveFolder(): void {
+function doMoveFolder(parentId: number | null): void {
   const target = moveTarget.value
   if (!target) return
-  const parentId = moveParentId.value
   void folderOps.run(target.id, 'move', async () => {
     if (await store.moveFolder(target.id, parentId)) moveTarget.value = null
   })
@@ -412,9 +408,8 @@ async function renameFile(target: StorageFile, name: string): Promise<void> {
   }
 }
 
-function doMoveFile(): void {
+function doMoveFile(folderId: number | null): void {
   const target = fileMoveTarget.value
-  const folderId = fileMoveFolderId.value
   if (!target || !folderId) return
   void fileOps.run(target.id, 'move', () => moveFile(target, folderId))
 }
@@ -480,26 +475,6 @@ function onDrop(ev: DragEvent): void {
   const files = ev.dataTransfer?.files
   if (files?.length) void store.uploadFiles(Array.from(files))
 }
-
-// Move-dialog helpers: eligible destination folders
-const moveFolderOptions = computed(() => {
-  if (!moveTarget.value) return []
-  // All folders except the target itself and its descendants.
-  const excluded = new Set<number>([moveTarget.value.id])
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const f of store.state.folders) {
-      if (f.parent_id && excluded.has(f.parent_id) && !excluded.has(f.id)) {
-        excluded.add(f.id)
-        changed = true
-      }
-    }
-  }
-  return store.state.folders.filter((f) => !excluded.has(f.id))
-})
-
-const fileMoveOptions = computed(() => store.state.folders)
 
 function folderMenuId(f: StorageFolder): string {
   return `folder-${f.id}`
@@ -752,7 +727,7 @@ function folderMenuId(f: StorageFolder): string {
                   :disabled="!canBulkMove || bulkBusy"
                   :title="canBulkMove ? undefined : t('storage.selNotAllowed')"
                   data-testid="bulk-move"
-                  @click="bulkMoveTarget = null; bulkMoveOpen = true"
+                  @click="bulkMoveOpen = true"
                 >
                   <FolderInput :size="15" /> {{ t('common.move') }}
                 </button>
@@ -852,7 +827,7 @@ function folderMenuId(f: StorageFolder): string {
                       v-if="folder.permissions.can_move"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
                       :disabled="folderOps.isBusy(folder.id)"
-                      @click="moveTarget = folder; moveParentId = folder.parent_id"
+                      @click="moveTarget = folder"
                     >
                       <FolderInput :size="15" /> {{ t('common.move') }}
                     </button>
@@ -1000,7 +975,7 @@ function folderMenuId(f: StorageFolder): string {
                       v-if="fileCaps?.can_move"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
                       :disabled="fileOps.isBusy(file.id)"
-                      @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
+                      @click="fileMoveTarget = file"
                     >
                       <FolderInput :size="15" /> {{ t('common.move') }}
                     </button>
@@ -1110,7 +1085,7 @@ function folderMenuId(f: StorageFolder): string {
                             v-if="fileCaps?.can_move"
                             class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
                             :disabled="fileOps.isBusy(file.id)"
-                            @click="fileMoveTarget = file; fileMoveFolderId = file.folder_id"
+                            @click="fileMoveTarget = file"
                           >
                             {{ t('common.move') }}
                           </button>
@@ -1265,24 +1240,15 @@ function folderMenuId(f: StorageFolder): string {
     </Teleport>
 
     <!-- Bulk move (selection) -->
-    <Teleport to="body">
-      <div v-if="bulkMoveOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" @click.self="bulkMoveOpen = false">
-        <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" role="dialog" data-testid="bulk-move-dialog">
-          <h3 class="section-title mb-4">{{ t('storage.selMoveTitle', { count: formatNumber(selectedKeys.length) }) }}</h3>
-          <label class="label" for="bulk-move-target">{{ t('storage.selMoveTo') }}</label>
-          <select id="bulk-move-target" v-model="bulkMoveTarget" class="input">
-            <option :value="null" disabled>{{ t('storage.selMoveChoose') }}</option>
-            <option v-for="f in bulkMoveOptions" :key="f.id" :value="f.id">{{ f.name }}</option>
-          </select>
-          <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" :disabled="bulkMoveAction.pending" @click="bulkMoveOpen = false">{{ t('common.cancel') }}</button>
-            <LoadingButton class="btn btn-primary" :loading="bulkMoveAction.pending" :disabled="!bulkMoveTarget" data-testid="bulk-move-confirm" @click="bulkMoveAction.run()">
-              {{ t('common.move') }}
-            </LoadingButton>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <MoveDialog
+      v-if="bulkMoveOpen"
+      :title="t('storage.selMoveTitle', { count: formatNumber(selectedKeys.length) })"
+      :subject="bulkMoveSubject"
+      :ctx="moveCtx(selectedFolders.map((f) => f.id), selectedFiles.length > 0, [currentParentId])"
+      :busy="bulkMoveAction.pending"
+      @close="bulkMoveOpen = false"
+      @confirm="(target) => bulkMoveAction.run(target)"
+    />
 
     <!-- Bulk create folders from Excel -->
     <BulkFolderDialog
@@ -1320,36 +1286,15 @@ function folderMenuId(f: StorageFolder): string {
     </Teleport>
 
     <!-- Move folder -->
-    <Teleport to="body">
-      <div
-        v-if="moveTarget"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
-        @click.self="moveTarget = null"
-      >
-        <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">{{ t('storage.moveFolder') }}</h3>
-          <p class="mb-4 text-sm text-slate-500">{{ t('storage.moveDestination', { name: moveTarget.name }) }}</p>
-          <select v-model="moveParentId" class="input">
-            <option :value="null">{{ t('storage.rootTopLevel') }}</option>
-            <option v-for="f in moveFolderOptions" :key="f.id" :value="f.id">
-              {{ f.name }}
-            </option>
-          </select>
-          <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="moveTarget = null">{{ t('common.cancel') }}</button>
-            <LoadingButton
-              class="btn btn-primary"
-              :loading-text="t('common.moving')"
-              :loading="folderOps.isPending(moveTarget.id, 'move')"
-              :disabled="folderOps.isBusy(moveTarget.id)"
-              @click="doMoveFolder"
-            >
-              {{ t('common.move') }}
-            </LoadingButton>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <MoveDialog
+      v-if="moveTarget"
+      :title="t('storage.moveFolder')"
+      :subject="moveTarget.name"
+      :ctx="moveCtx([moveTarget.id], false, [moveTarget.parent_id])"
+      :busy="folderOps.isPending(moveTarget.id, 'move')"
+      @close="moveTarget = null"
+      @confirm="doMoveFolder"
+    />
 
     <!-- Delete folder confirm -->
     <Teleport to="body">
@@ -1407,33 +1352,15 @@ function folderMenuId(f: StorageFolder): string {
     </Teleport>
 
     <!-- Move file -->
-    <Teleport to="body">
-      <div
-        v-if="fileMoveTarget"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
-        @click.self="fileMoveTarget = null"
-      >
-        <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-          <h3 class="section-title mb-1">{{ t('storage.moveFile') }}</h3>
-          <p class="mb-4 truncate text-sm text-slate-500">{{ t('storage.moveDestination', { name: fileMoveTarget.file_name }) }}</p>
-          <select v-model="fileMoveFolderId" class="input">
-            <option v-for="f in fileMoveOptions" :key="f.id" :value="f.id">{{ f.name }}</option>
-          </select>
-          <div class="mt-4 flex justify-end gap-3">
-            <button class="btn btn-secondary" @click="fileMoveTarget = null">{{ t('common.cancel') }}</button>
-            <LoadingButton
-              class="btn btn-primary"
-              :loading-text="t('common.moving')"
-              :loading="fileOps.isPending(fileMoveTarget.id, 'move')"
-              :disabled="!fileMoveFolderId || fileOps.isBusy(fileMoveTarget.id)"
-              @click="doMoveFile"
-            >
-              {{ t('common.move') }}
-            </LoadingButton>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <MoveDialog
+      v-if="fileMoveTarget"
+      :title="t('storage.moveFile')"
+      :subject="fileMoveTarget.file_name"
+      :ctx="moveCtx([], true, [fileMoveTarget.folder_id])"
+      :busy="fileOps.isPending(fileMoveTarget.id, 'move')"
+      @close="fileMoveTarget = null"
+      @confirm="doMoveFile"
+    />
 
     <!-- Delete file confirm -->
     <Teleport to="body">

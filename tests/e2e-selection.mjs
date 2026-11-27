@@ -197,11 +197,13 @@ async function main() {
   await test('bulk Move: A1 moved into A2', async () => {
     await clickItem('A1')
     await ev(`document.querySelector('[data-testid="bulk-move"]').click()`)
-    await waitFor(`!!document.querySelector('[data-testid="bulk-move-dialog"]')`, 'move dialog')
-    const options = await ev(`[...document.querySelectorAll('#bulk-move-target option')].map((o) => o.text)`)
-    assert(!options.includes('A1'), 'cannot move into itself')
-    await ev(`(() => { const el = document.querySelector('#bulk-move-target'); const o = [...el.options].find((x) => x.text === 'A2'); el.value = o.value; el.dispatchEvent(new Event('change', { bubbles: true })) })()`)
-    await ev(`document.querySelector('[data-testid="bulk-move-confirm"]').click()`)
+    await waitFor(`!!document.querySelector('[data-testid="move-dialog"]')`, 'move dialog')
+    // Tree picker: search the destination; A1 itself (being moved) is disabled.
+    await ev(`(() => { const el = document.querySelector('[data-testid="tree-search"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'A'); el.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+    await waitFor(`[...document.querySelectorAll('[data-tree-key]')].some((li) => li.querySelector('[data-testid="tree-name"]')?.innerText === 'A2')`, 'A2 in the tree')
+    assert(await ev(`[...document.querySelectorAll('[data-tree-key]')].find((li) => li.querySelector('[data-testid="tree-name"]')?.innerText === 'A1').dataset.blocked === 'moving'`), 'cannot move into itself')
+    await ev(`[...document.querySelectorAll('[data-tree-key]')].find((li) => li.querySelector('[data-testid="tree-name"]')?.innerText === 'A2').click()`)
+    await ev(`document.querySelector('[data-testid="move-confirm"]').click()`)
     await waitFor(`![...document.querySelectorAll('[data-item-key]')].some((el) => el.querySelector('p')?.innerText.trim() === 'A1')`, 'moved out of the list')
     await waitFor(`document.body.innerText.includes('1 item(s) moved.')`, 'toast')
   })
