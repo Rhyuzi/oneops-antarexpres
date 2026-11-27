@@ -11,11 +11,12 @@
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test": "node tests/test-core.js && node tests/test-audit.js && node tests/test-i18n.js && node tests/test-loader.js && node tests/test-phone.js && node tests/test-master-data.js && node tests/test-account-self.js && node tests/test-wilayah.js && node tests/test-duplicates.js && node tests/test-resi-issues.js && node tests/test-loader-enhancements.js && node tests/test-folder-actions.js && node tests/test-selection.js && node tests/test-folder-tree.js",
+    "test": "node tests/test-core.js && node tests/test-audit.js && node tests/test-i18n.js && node tests/test-loader.js && node tests/test-phone.js && node tests/test-master-data.js && node tests/test-account-self.js && node tests/test-wilayah.js && node tests/test-duplicates.js && node tests/test-resi-issues.js && node tests/test-loader-enhancements.js && node tests/test-folder-actions.js && node tests/test-selection.js && node tests/test-folder-tree.js && node tests/test-r2-delete.js",
     "r2:check": "node server/scripts/r2-check.js",
     "hash-password": "node server/scripts/hash-password.js",
     "loader:import": "node server/scripts/import-kebutuhan-loader.js",
-    "loader:hubs": "node server/scripts/import-datahub.js"
+    "loader:hubs": "node server/scripts/import-datahub.js",
+    "storage:r2-cleanup": "node server/scripts/r2-cleanup.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.600.0",

@@ -25,6 +25,7 @@ const {
 const { logAudit, ACTIONS } = require("../audit");
 const { createZip } = require("../zipWriter");
 const bulk = require("../folderBulk");
+const storageDelete = require("../storageDelete");
 
 // "Download all from folder": hard limits (classic zip, server memory per file).
 const MAX_ZIP_FILES = 2000;
@@ -587,6 +588,101 @@ router.get("/download-selection", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Bulk delete (multi-selection): folders with everything inside + files
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/storage/bulk-delete { folderIds: number[], fileIds: number[] }
+ * Every item needs can_delete (on the folder / the file's folder); items that
+ * fail the check are skipped and reported. All R2 objects of the allowed items
+ * (sub-folders, files, versions) go in one batched purge. One audit row.
+ */
+router.post("/bulk-delete", async (req, res) => {
+  try {
+    const ids = (v) => [...new Set((Array.isArray(v) ? v : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 1000);
+    const folderIds = ids((req.body || {}).folderIds);
+    const fileIds = ids((req.body || {}).fileIds);
+    if (!folderIds.length && !fileIds.length) {
+      return res.status(400).json({ ok: false, code: "NOTHING_SELECTED", message: "Select at least one file or folder." });
+    }
+    const skipped = [];
+    const okFolders = [];
+    const names = [];
+    for (const id of folderIds) {
+      const [f] = await query("SELECT id, name FROM storage_folders WHERE id = ? AND deleted_at IS NULL", [id]);
+      if (!f) {
+        skipped.push({ kind: "folder", id, reason: "not_found" });
+        continue;
+      }
+      try {
+        await authorizeFolder(req.user, id, "can_delete");
+        okFolders.push(id);
+        names.push(f.name);
+      } catch (err) {
+        skipped.push({ kind: "folder", id, reason: err.status === 403 ? "forbidden" : "not_found" });
+      }
+    }
+    // Files inside a deleted folder are covered by the folder.
+    const covered = new Set(okFolders.length ? await storageDelete.descendantFolderIds(okFolders) : []);
+    const okFiles = [];
+    for (const id of fileIds) {
+      const [f] = await query("SELECT id, folder_id, file_name FROM storage_files WHERE id = ? AND deleted_at IS NULL", [id]);
+      if (!f) {
+        skipped.push({ kind: "file", id, reason: "not_found" });
+        continue;
+      }
+      if (covered.has(Number(f.folder_id))) continue;
+      try {
+        await authorizeFolder(req.user, Number(f.folder_id), "can_delete");
+        okFiles.push(id);
+        names.push(f.file_name);
+      } catch (err) {
+        skipped.push({ kind: "file", id, reason: err.status === 403 ? "forbidden" : "not_found" });
+      }
+    }
+
+    // One R2 purge for everything (folders' trees + selected files).
+    const folderIdsAll = okFolders.length ? await storageDelete.descendantFolderIds(okFolders) : [];
+    const { files, keyOwner } = await storageDelete.filesAndKeys({ folderIds: folderIdsAll, fileIds: okFiles });
+    const r2Result = await storageDelete.purgeObjects(keyOwner, { context: "bulk delete" });
+    const now = new Date();
+    if (folderIdsAll.length) {
+      await query(`UPDATE storage_folders SET deleted_at = ?, updated_by = ? WHERE id IN (${folderIdsAll.map(() => "?").join(",")})`, [now, req.user.id, ...folderIdsAll]);
+    }
+    if (files.length) {
+      await query(`UPDATE storage_files SET deleted_at = ? WHERE id IN (${files.map(() => "?").join(",")}) AND deleted_at IS NULL`, [now, ...files.map((f) => f.id)]);
+    }
+
+    await logAudit({
+      req,
+      userId: req.user.id,
+      action: ACTIONS.FOLDER_BULK_DELETE,
+      entityType: "folder",
+      metadata: {
+        folders_selected: folderIds.length,
+        files_selected: fileIds.length,
+        folders_deleted: folderIdsAll.length,
+        files_deleted: files.length,
+        r2_objects: r2Result.objects,
+        r2_deleted: r2Result.deleted,
+        r2_failed: r2Result.failed,
+        skipped: skipped.length,
+        names: names.slice(0, 50),
+      },
+      ip: clientIp(req),
+    });
+    return res.json({
+      ok: true,
+      deleted: { items: okFolders.length + okFiles.length, folders: folderIdsAll.length, files: files.length },
+      r2: r2Result,
+      skipped,
+    });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
 // GET /api/storage/folders/:id — one folder with permissions
 router.get("/folders/:id", async (req, res) => {
   try {
@@ -759,34 +855,9 @@ router.delete("/folders/:id", async (req, res) => {
 
     await authorizeFolder(req.user, id, "can_delete");
 
-    // Collect all descendant folder ids (BFS; cycles impossible due to FK,
-    // but guard anyway).
-    const descendants = [id];
-    const seen = new Set([id]);
-    for (let i = 0; i < descendants.length; i++) {
-      const children = await query(
-        "SELECT id FROM storage_folders WHERE parent_id = ? AND deleted_at IS NULL",
-        [descendants[i]]
-      );
-      for (const c of children) {
-        const cid = Number(c.id);
-        if (!seen.has(cid)) {
-          seen.add(cid);
-          descendants.push(cid);
-        }
-      }
-    }
-
-    const placeholders = descendants.map(() => "?").join(",");
-    const now = new Date();
-    await query(
-      `UPDATE storage_folders SET deleted_at = ?, updated_by = ? WHERE id IN (${placeholders})`,
-      [now, req.user.id, ...descendants]
-    );
-    await query(
-      `UPDATE storage_files SET deleted_at = ? WHERE folder_id IN (${placeholders}) AND deleted_at IS NULL`,
-      [now, ...descendants]
-    );
+    // Folder + every sub-folder, their files and all file versions: R2 objects
+    // deleted in batches (failures queued in storage_r2_cleanup), then the rows.
+    const out = await storageDelete.deleteFolderTrees([id], req.user.id, { context: `folder ${id} delete` });
 
     await logAudit({
       req,
@@ -797,15 +868,18 @@ router.delete("/folders/:id", async (req, res) => {
         description: existing.description || null,
         parent_id: existing.parent_id ? Number(existing.parent_id) : null,
       },
-      metadata: { name: existing.name, folders_deleted: descendants.length },
+      metadata: {
+        name: existing.name,
+        folders_deleted: out.folderIds.length,
+        files_deleted: out.files.length,
+        r2_objects: out.r2.objects,
+        r2_deleted: out.r2.deleted,
+        r2_failed: out.r2.failed,
+      },
       ip: clientIp(req),
     });
 
-    // R2 objects are NOT deleted immediately (soft-delete keeps files
-    // recoverable); cleanup of orphaned objects is a separate maintenance
-    // task. See database/README.md and deployment docs.
-
-    return res.json({ ok: true });
+    return res.json({ ok: true, folders: out.folderIds.length, files: out.files.length, r2: out.r2 });
   } catch (err) {
     return fail(res, err);
   }
@@ -1430,29 +1504,17 @@ router.delete("/files/:id", async (req, res) => {
 
     await authorizeFolder(req.user, Number(existing.folder_id), "can_delete");
 
-    await query("UPDATE storage_files SET deleted_at = ? WHERE id = ?", [new Date(), id]);
-
-    // Best-effort R2 deletion of every version's object.
-    const versions = await query(
-      "SELECT object_key FROM storage_file_versions WHERE file_id = ?",
-      [id]
-    );
-    let r2Deleted = 0;
-    for (const v of versions) {
-      try {
-        await r2.deleteObject(v.object_key);
-        r2Deleted += 1;
-      } catch (err) {
-        console.error("[storage] R2 delete failed for", "object", err.message);
-      }
-    }
+    // The file and all its versions: R2 objects in one batch (failures queued
+    // in storage_r2_cleanup), then the row.
+    const versions = await query("SELECT id FROM storage_file_versions WHERE file_id = ?", [id]);
+    const out = await storageDelete.deleteFiles([id], { context: `file ${id} delete` });
 
     await logAudit({
       req,
       userId: req.user.id, action: ACTIONS.FILE_DELETE, entityType: "file",
       entityId: id,
       before: { file_name: existing.file_name, folder_id: Number(existing.folder_id), versions: versions.length },
-      metadata: { file_name: existing.file_name, r2_deleted: r2Deleted }, ip: clientIp(req),
+      metadata: { file_name: existing.file_name, r2_objects: out.r2.objects, r2_deleted: out.r2.deleted, r2_failed: out.r2.failed }, ip: clientIp(req),
     });
 
     return res.json({ ok: true });

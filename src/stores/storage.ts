@@ -213,10 +213,12 @@ export const storageStore = {
 
   async removeFolder(id: number): Promise<boolean> {
     try {
-      await deleteFolder(id)
+      const out = await deleteFolder(id)
       if (state.currentFolderId === id) await this.navigateTo('root')
       else await Promise.all([this.refreshFolders(), this.refreshFiles()])
       this.toast('success', t('storage.folderDeleted'))
+      // R2 objects that could not be removed now are queued (storage_r2_cleanup).
+      if (out && out.r2 && out.r2.failed) this.toast('info', t('storage.r2Queued', { count: out.r2.failed }), 8000)
       return true
     } catch (err) {
       this.toast('error', apiErrorMessage(err, 'storage.deleteFailed'))

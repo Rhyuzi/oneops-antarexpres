@@ -60,6 +60,7 @@ import {
   getSelectionDownloadSummary,
   selectionDownloadUrl,
   getDownloadUrl,
+  bulkDelete,
   updateFile,
   updateFolder,
   type StorageFile,
@@ -312,11 +313,22 @@ async function runBulk(op: (kind: 'folder' | 'file', id: number) => Promise<unkn
   selection.value = clearSelection(selection.value)
   return { ok, failed }
 }
+/** One request: folders (with every sub-folder and file) + files; R2 purged in one batch. */
 const bulkDeleteAction = useAsyncAction(async (): Promise<void> => {
-  const r = await runBulk((kind, id) => (kind === 'folder' ? deleteFolder(id) : deleteFile(id)))
-  bulkDeleteOpen.value = false
-  if (r.ok) store.toast('success', t('storage.selDeleteDone', { count: formatNumber(r.ok) }))
-  if (r.failed) store.toast('error', t('storage.selDeleteFailed', { count: formatNumber(r.failed) }), 8000)
+  bulkBusy.value = true
+  try {
+    const r = await bulkDelete(selectedFolders.value.map((f) => f.id), selectedFiles.value.map((f) => f.id))
+    bulkDeleteOpen.value = false
+    if (r.deleted.items) store.toast('success', t('storage.selDeleteDone', { count: formatNumber(r.deleted.items) }))
+    if (r.skipped.length) store.toast('error', t('storage.selDeleteFailed', { count: formatNumber(r.skipped.length) }), 8000)
+    if (r.r2.failed) store.toast('info', t('storage.r2Queued', { count: formatNumber(r.r2.failed) }), 8000)
+  } catch (err) {
+    store.toast('error', apiErrorMessage(err, 'storage.deleteFailed'))
+  } finally {
+    bulkBusy.value = false
+    await Promise.all([store.refreshFolders(), store.refreshFiles()])
+    selection.value = clearSelection(selection.value)
+  }
 })
 const bulkMoveAction = useAsyncAction(async (target: number | null): Promise<void> => {
   const r = await runBulk((kind, id) => (kind === 'folder' ? updateFolder(id, { parentId: target }) : updateFile(id, { folderId: target as number })))

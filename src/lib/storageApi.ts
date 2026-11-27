@@ -158,8 +158,22 @@ export async function updateFolder(
   return resp.data.folder
 }
 
-export async function deleteFolder(id: number): Promise<void> {
-  await axios.delete(`/api/storage/folders/${id}`)
+/** R2 objects of a deletion: removed now / queued for cleanup (failed). */
+export interface R2DeleteResult { objects: number; deleted: number; failed: number }
+
+/** Deletes the folder, every sub-folder and all files (also from R2). */
+export async function deleteFolder(id: number): Promise<{ folders: number; files: number; r2: R2DeleteResult }> {
+  return (await axios.delete(`/api/storage/folders/${id}`)).data
+}
+
+export interface BulkDeleteResult {
+  deleted: { items: number; folders: number; files: number }
+  r2: R2DeleteResult
+  skipped: Array<{ kind: 'folder' | 'file'; id: number; reason: 'forbidden' | 'not_found' }>
+}
+/** Multi-selection delete: folders with everything inside + files, one R2 purge. */
+export async function bulkDelete(folderIds: number[], fileIds: number[]): Promise<BulkDeleteResult> {
+  return (await axios.post('/api/storage/bulk-delete', { folderIds, fileIds })).data
 }
 
 export async function listFiles(params: {

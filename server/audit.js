@@ -40,6 +40,7 @@ const ACTIONS = {
   FOLDER_BULK_CREATE: "folder.bulk_create",
   FOLDER_DOWNLOAD_ALL: "folder.download_all",
   FOLDER_DOWNLOAD_SELECTION: "folder.download_selection",
+  FOLDER_BULK_DELETE: "folder.bulk_delete",
   FOLDER_UPDATE: "folder.update",
   FOLDER_RENAME: "folder.rename",
   FOLDER_MOVE: "folder.move",
@@ -264,12 +265,13 @@ function describe(action, d, entityId) {
     case "user.deactivate": return `Deactivated user ${who}`.trim();
     case "folder.create": return `Created folder "${x.name || entityId}"`;
     case "folder.bulk_create": return `Bulk-created ${x.created || 0} folder(s)${x.parent ? ` in "${x.parent}"` : ""} from Excel${x.skipped ? ` (${x.skipped} skipped)` : ""}`;
+    case "folder.bulk_delete": return `Bulk-deleted ${x.folders_deleted || 0} folder(s) and ${x.files_deleted || 0} file(s)${x.r2_objects ? ` (${x.r2_deleted || 0}/${x.r2_objects} storage object(s) removed${x.r2_failed ? `, ${x.r2_failed} queued for cleanup` : ""})` : ""}`;
     case "folder.download_selection": return `Downloaded a selection as zip (${x.files || 0} file(s) from ${x.folders || 0} folder(s) and ${x.selected_files || 0} selected file(s))`;
     case "folder.download_all": return `Downloaded all files of folder "${x.folder || entityId}" as zip (${x.files || 0} file(s))`;
     case "folder.update": return `Updated folder "${x.name || entityId}"`;
     case "folder.rename": return `Renamed folder "${x.from || ""}" → "${x.to || ""}"`;
     case "folder.move": return x.to_path ? `Moved folder "${x.name || entityId}" from "${x.from_path}" to "${x.to_path}"` : `Moved folder "${x.name || entityId}"`;
-    case "folder.delete": return `Deleted folder "${x.name || entityId}"${x.folders_deleted ? ` (${x.folders_deleted} folder(s) incl. subfolders)` : ""}`;
+    case "folder.delete": return `Deleted folder "${x.name || entityId}"${x.folders_deleted > 1 ? ` (${x.folders_deleted} folder(s) incl. subfolders)` : ""}${x.files_deleted ? `, ${x.files_deleted} file(s)` : ""}${x.r2_failed ? ` — ${x.r2_failed} storage object(s) queued for cleanup` : ""}`;
     case "permission.update": return `Changed folder permissions of "${x.folder || entityId}"`;
     case "file.upload": return `Uploaded "${x.file_name || entityId}"`;
     case "file.download": return `Downloaded "${x.file_name || entityId}"`;

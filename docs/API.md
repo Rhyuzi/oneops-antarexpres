@@ -28,7 +28,7 @@ browser sends it automatically; API clients must capture and replay the
 | POST | `/api/storage/folders` | `can_create_folder` on parent (root folders: super_admin only) |
 | GET | `/api/storage/folders/:id` | `can_view` |
 | PUT | `/api/storage/folders/:id` | `can_rename` (name) and/or `can_move` + destination `can_create_folder` (parentId) |
-| DELETE | `/api/storage/folders/:id` | `can_delete` — soft-deletes folder tree + contents |
+| DELETE | `/api/storage/folders/:id` | `can_delete` — deletes the folder, every sub-folder and all their files; every R2 object (files + all versions) is removed. Returns `{ folders, files, r2: { objects, deleted, failed } }` |
 
 POST body: `{name, description?, parentId?}`.
 
@@ -52,7 +52,13 @@ Audit rows `folder.move` / `file.move` keep `from_path` / `to_path` (`Root / 202
 
 | GET | `/api/storage/download-selection(/summary)?folders=1,2&files=3,4&name=<folder>` | Zip of a multi-selection: the selected folders (with their sub-folders, per-folder permission) plus the selected files (download permission on their folder; any refusal → 403, all-or-nothing). Files of selected folders keep `<folder>/…`; selected files go to the zip root; names are made unique. 400 `NOTHING_SELECTED`. Same limits as download-all. Audit `folder.download_selection` |
 
-**Multi-select (UI, `src/lib/selection.ts`).** Click selects one item; Ctrl/Cmd+click toggles; Shift+click selects a range from the anchor (earlier Ctrl/Cmd picks are kept). Shift+↑/↓ extends the range, Ctrl/Cmd+↑/↓ moves the focus only, Space toggles the focused item, Ctrl/Cmd+A selects all, Esc clears, Enter or double-click opens. A Select-all checkbox (checked / indeterminate / unchecked) and a bulk bar (Download / Move / Delete) follow the selection. Move and Delete call the single-item endpoints for each item.
+**Multi-select (UI, `src/lib/selection.ts`).** Click selects one item; Ctrl/Cmd+click toggles; Shift+click selects a range from the anchor (earlier Ctrl/Cmd picks are kept). Shift+↑/↓ extends the range, Ctrl/Cmd+↑/↓ moves the focus only, Space toggles the focused item, Ctrl/Cmd+A selects all, Esc clears, Enter or double-click opens. A Select-all checkbox (checked / indeterminate / unchecked) and a bulk bar (Download / Move / Delete) follow the selection. Move calls the single-item endpoints for each item; Delete calls `POST /api/storage/bulk-delete` once.
+
+**Deletion and Cloudflare R2** (`server/storageDelete.js`). Deleting a folder (single or bulk) walks all its live sub-folders recursively, collects every file and every `storage_file_versions` object key, and deletes them from R2 in batches of up to 1,000 keys (`DeleteObjects`, `server/r2.js deleteObjects`). After that, the folders and files are soft-deleted in the DB. Objects R2 does not delete (a per-object error, or a failed or unreachable request) are logged with the error code only and written to `storage_r2_cleanup` (migration 016), so no orphan goes undetected. The DB delete still completes. Retry them with `npm run storage:r2-cleanup` (`-- --list` only shows the count); a row gets `resolved_at` once R2 confirms. Audit metadata: `folders_deleted`, `files_deleted`, `r2_objects`, `r2_deleted`, `r2_failed` (`file.delete` uses the `r2_*` fields).
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/storage/bulk-delete` | `{ folderIds: number[], fileIds: number[] }` (max 1,000 each). Every item needs `can_delete`; items that fail are skipped with `{ kind, id, reason: forbidden | not_found }`. Files inside a selected folder are covered by that folder and are not counted twice. One R2 purge for everything. Returns `{ deleted: { items, folders, files }, r2, skipped }`; 400 `NOTHING_SELECTED`. Audit `folder.bulk_delete` |
 
 ## Storage — Files
 

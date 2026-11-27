@@ -18,6 +18,7 @@ const {
   HeadObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
 } = require("@aws-sdk/client-s3");
@@ -25,6 +26,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { config, r2Configured } = require("./config");
 
 let client = null;
+let testClient = null; // setClientForTests()
 
 function r2Error(message, status = 503) {
   const err = new Error(message);
@@ -34,6 +36,7 @@ function r2Error(message, status = 503) {
 }
 
 function getClient() {
+  if (testClient) return testClient;
   if (!r2Configured()) {
     throw r2Error("Cloudflare R2 is not configured on the server.");
   }
@@ -178,6 +181,45 @@ async function deleteObject(objectKey) {
   return true;
 }
 
+/** Max keys per DeleteObjects request (S3 / R2 limit). */
+const DELETE_BATCH = 1000;
+
+/**
+ * Batch delete. Returns { deleted: string[], failed: [{ key, code, message }] }.
+ * Per-object errors come from the response; a failed request (network, auth,
+ * R2 not configured) marks every key of that batch as failed. Never throws.
+ */
+async function deleteObjects(keys) {
+  const unique = [...new Set((keys || []).filter(Boolean))];
+  const deleted = [];
+  const failed = [];
+  for (let i = 0; i < unique.length; i += DELETE_BATCH) {
+    const batch = unique.slice(i, i + DELETE_BATCH);
+    try {
+      const out = await getClient().send(
+        new DeleteObjectsCommand({
+          Bucket: config.r2.bucketName,
+          Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+      const errors = new Map((out.Errors || []).map((e) => [e.Key, e]));
+      for (const key of batch) {
+        const e = errors.get(key);
+        if (e) failed.push({ key, code: e.Code || "Error", message: String(e.Message || "").slice(0, 300) });
+        else deleted.push(key);
+      }
+    } catch (err) {
+      for (const key of batch) failed.push({ key, code: err.name || "RequestFailed", message: String(err.message || "").slice(0, 300) });
+    }
+  }
+  return { deleted, failed };
+}
+
+/** Tests only: replace the S3 client (null = rebuild from config). */
+function setClientForTests(fake) {
+  testClient = fake || null;
+}
+
 /** Deletes every object under a folder prefix (used by folder deletion). */
 async function deletePrefix(prefix) {
   let continuationToken;
@@ -208,6 +250,9 @@ module.exports = {
   presignDownload,
   getObjectStream,
   deleteObject,
+  deleteObjects,
+  DELETE_BATCH,
+  setClientForTests,
   deletePrefix,
   buildObjectKey,
   sanitizeFilename,
