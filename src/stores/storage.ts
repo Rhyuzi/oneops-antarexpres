@@ -9,6 +9,8 @@ import {
   putFileToR2,
   completeUpload,
   getFolder,
+  ensureFolderTree,
+  type UploadSource,
   StorageFolder,
   StorageFile,
   FilesResponse,
@@ -16,6 +18,16 @@ import {
 } from '../lib/storageApi'
 import { t } from '../i18n'
 import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
+import { dirKey, planLocalUpload, type LocalEntry } from '../lib/localDrop'
+
+/** Result of a drag & drop / paste upload (also shown as notifications). */
+export interface LocalUploadSummary {
+  created: number
+  merged: string[]
+  uploaded: number
+  failed: number
+  skippedRootFiles: number
+}
 
 interface Toast {
   id: number
@@ -42,6 +54,8 @@ interface StorageState {
   viewMode: 'grid' | 'list'
   capabilities: FilesResponse['capabilities']
   uploads: UploadProgressItem[]
+  /** Drag & drop / paste in progress: folders prepared, files done / total. */
+  localUpload: { phase: 'folders' | 'files'; done: number; total: number } | null
   toasts: Toast[]
   currentFolder: StorageFolder | null
 }
@@ -65,6 +79,7 @@ const state = reactive<StorageState>({
   viewMode: 'grid',
   capabilities: null,
   uploads: [],
+  localUpload: null,
   toasts: [],
   currentFolder: null,
 })
@@ -273,18 +288,83 @@ export const storageStore = {
   },
 
   // -- upload flow ------------------------------------------------------------
-  async uploadFiles(files: File[]): Promise<void> {
+  async uploadFiles(files: File[], source: UploadSource = 'picker'): Promise<void> {
     if (isRoot(state.currentFolderId)) {
       this.toast('error', t('storage.selectFolderFirst'))
       return
     }
-    const folderId = Number(state.currentFolderId)
+    await this.uploadFilesTo(Number(state.currentFolderId), files, { source })
+    await this.refreshFiles()
+    await this.refreshFolders() // file counts
+  },
 
+  /**
+   * Drag & drop / paste from the local file manager into the current folder:
+   * the folder tree is created first (a folder whose name already exists is
+   * reused = merged, never duplicated), then every file goes to its folder.
+   */
+  async uploadLocal(entries: LocalEntry[], source: 'drop' | 'paste' = 'drop'): Promise<LocalUploadSummary> {
+    const summary: LocalUploadSummary = { created: 0, merged: [], uploaded: 0, failed: 0, skippedRootFiles: 0 }
+    const plan = planLocalUpload(entries)
+    if (!plan.folderPaths.length && !plan.fileCount) return summary
+    const parentId = isRoot(state.currentFolderId) ? null : Number(state.currentFolderId)
+    const folderIds = new Map<string, number>()
+    try {
+      if (plan.folderPaths.length) {
+        state.localUpload = { phase: 'folders', done: 0, total: plan.fileCount }
+        try {
+          const tree = await ensureFolderTree(parentId, plan.folderPaths, source)
+          for (const [path, id] of Object.entries(tree.folders)) folderIds.set(dirKey(path), id)
+          summary.created = tree.created.length
+          summary.merged = tree.merged.map((m) => m.path)
+          if (summary.merged.length) {
+            const names = summary.merged.slice(0, 5).join(', ') + (summary.merged.length > 5 ? ' …' : '')
+            this.toast('info', t('storage.dropMerged', { count: summary.merged.length, names }), 9000)
+          }
+          await this.refreshFolders()
+        } catch (err) {
+          this.toast('error', apiErrorMessage(err, 'storage.dropFoldersFailed'), 8000)
+          summary.failed = plan.fileCount
+          return summary
+        }
+      }
+      state.localUpload = { phase: 'files', done: 0, total: plan.fileCount }
+      for (const group of plan.groups) {
+        const target = group.dir ? folderIds.get(dirKey(group.dir)) : parentId
+        if (target === null || target === undefined) {
+          // Loose files dropped on Root: files must live inside a folder.
+          summary.skippedRootFiles += group.files.length
+          continue
+        }
+        const r = await this.uploadFilesTo(target, group.files, { source, quiet: true })
+        summary.uploaded += r.uploaded
+        summary.failed += r.failed
+      }
+    } finally {
+      state.localUpload = null
+    }
+    if (summary.skippedRootFiles) this.toast('error', t('storage.dropRootFiles', { count: summary.skippedRootFiles }), 8000)
+    if (summary.uploaded || summary.created) {
+      this.toast('success', t('storage.dropDone', { files: summary.uploaded, folders: summary.created }))
+    }
+    if (summary.failed) this.toast('error', t('storage.dropFailed', { count: summary.failed }), 8000)
+    await this.refreshFiles()
+    await this.refreshFolders()
+    return summary
+  },
+
+  /** Uploads files into folderId (progress rows in state.uploads). */
+  async uploadFilesTo(
+    folderId: number,
+    files: File[],
+    opts: { source?: UploadSource; quiet?: boolean } = {}
+  ): Promise<{ uploaded: number; failed: number }> {
+    const result = { uploaded: 0, failed: 0 }
     const accepted = files.filter((file) => !uploadsInFlight.has(uploadKey(folderId, file)))
     if (accepted.length < files.length) {
       this.toast('error', t('storage.skippedDuplicates'))
     }
-    if (!accepted.length) return
+    if (!accepted.length) return result
     accepted.forEach((file) => uploadsInFlight.add(uploadKey(folderId, file)))
 
     for (const file of accepted) {
@@ -312,17 +392,19 @@ export const storageStore = {
 
         item.status = 'finalizing'
         item.progress = 100
-        await completeUpload(uploadToken)
+        await completeUpload(uploadToken, opts.source || 'picker')
 
         item.status = 'done'
+        result.uploaded += 1
         window.setTimeout(() => {
           const idx = state.uploads.findIndex((u) => u.id === itemId)
           if (idx >= 0) state.uploads.splice(idx, 1)
         }, 1500)
-        this.toast('success', t('storage.fileUploaded', { name: file.name }))
+        if (!opts.quiet) this.toast('success', t('storage.fileUploaded', { name: file.name }))
       } catch (err) {
         const e = err as { response?: { data?: { message?: string } }; message?: string }
         item.status = 'error'
+        result.failed += 1
         item.error = e.response?.data?.message || e.message || 'Upload failed.'
         this.toast('error', t('storage.fileUploadError', { name: file.name, error: localizeMessage(item.error) }))
         window.setTimeout(() => {
@@ -331,11 +413,10 @@ export const storageStore = {
         }, 6000)
       } finally {
         uploadsInFlight.delete(uploadKey(folderId, file))
+        if (state.localUpload && state.localUpload.phase === 'files') state.localUpload.done += 1
       }
     }
-
-    await this.refreshFiles()
-    await this.refreshFolders() // file counts
+    return result
   },
 
   dismissUpload(id: string): void {

@@ -151,3 +151,12 @@ All lifecycle events land in `storage_audit_logs`: `account.created`,
 `account.password_reset_requested`, `account.password_changed`,
 `account.deleted`, `smtp.verify`, `smtp.test_email` — with actor, target and
 non-sensitive metadata. Tokens and passwords are never written to the log.
+
+
+## Username: exists check, admin change, login (Nov 2026)
+
+- **Create Account**: the username field is checked live (`GET /api/accounts/username-available?username=…[&excludeId=…]` → `{ valid, available }`, needs `account_management.create` or `.reset_password`). An existing username (any case) shows "Username already exists" and disables Create. `POST /api/accounts` checks again (409 `That username is already taken.`).
+- **Admin Reset Password**: the dialog has a username field, prefilled with the current username. `POST /api/accounts/:id/reset-password { username? }`: a different, valid, unused username is saved before the reset email is sent (409 `USERNAME_TAKEN` / 400 invalid, nothing changed). The change is audited as `account.username_changed` (from / to, `via: admin_reset_password`). The response carries `username` and `usernameChanged`.
+- **Forgot Password (user)** stays email-only; there is no username input.
+- **Login** takes the username **or** the email in one field ("Username or email"), case-insensitive. See docs/API.md.
+- `EMAIL_TRANSPORT=mock` now really uses the mock transport. Before the fix in `server/config.js` it was always off, so test runs sent real mail.

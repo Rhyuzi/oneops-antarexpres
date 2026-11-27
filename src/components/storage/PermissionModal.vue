@@ -34,7 +34,7 @@ const CAPS: Array<{ key: keyof PermissionRow; label: string }> = [
   { key: 'can_rename', label: 'Rename' },
   { key: 'can_move', label: 'Move' },
   { key: 'can_delete', label: 'Delete' },
-  { key: 'can_manage_permissions', label: 'Manage permissions' },
+  // can_manage_permissions is not offered: managing permissions is Super Admin only.
 ]
 
 function rowFor(roleId: number): PermissionRow {
@@ -66,7 +66,8 @@ function ensureAllRows(): void {
 onMounted(async () => {
   try {
     const data = await getFolderPermissions(props.folderId)
-    roles.value = data.roles
+    // Super Admin always has full access, so the role is never listed.
+    roles.value = data.roles.filter((r) => r.name !== 'super_admin')
     rows.value = data.permissions
     ensureAllRows()
   } catch (err) {
@@ -102,7 +103,7 @@ const saveAction = useAsyncAction(async (): Promise<void> => {
       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
       @click.self="emit('close')"
     >
-      <div class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" data-testid="permission-modal">
         <div class="flex items-center gap-3 border-b border-slate-200 px-5 py-3.5">
           <Shield :size="20" class="text-indigo-600" />
           <div class="flex-1">

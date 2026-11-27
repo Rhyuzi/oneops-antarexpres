@@ -81,6 +81,48 @@ async function withPendingInvitations(accounts) {
   return accounts.map((a) => ({ ...a, has_pending_invitation: pending.has(a.id) }));
 }
 
+/** Lower-cased, trimmed username (usernames are stored lower-case). */
+const normUsername = (v) => String(v || "").trim().toLowerCase();
+
+/** true when another account (not excludeId) already uses the username. */
+async function usernameTaken(username, excludeId = null) {
+  const rows = await query(
+    `SELECT id FROM users WHERE LOWER(username) = ? ${excludeId ? "AND id <> ?" : ""} LIMIT 1`,
+    excludeId ? [username, excludeId] : [username]
+  );
+  return rows.length > 0;
+}
+
+/** Needs account_management.create OR account_management.reset_password. */
+function requireCreateOrReset(req, res, next) {
+  if (!req.user) return res.status(401).json({ ok: false, message: "Authentication required." });
+  if (req.user.roles && req.user.roles.includes("super_admin")) return next();
+  const perms = req.user.permissions;
+  if (perms && (perms.has("account_management.create") || perms.has("account_management.reset_password"))) return next();
+  return res.status(403).json({ ok: false, message: "You do not have permission to perform this action." });
+}
+
+// ===========================================================================
+// Username availability (Create Account / Admin Reset Password forms)
+// ===========================================================================
+
+/**
+ * GET /api/accounts/username-available?username=x[&excludeId=5]
+ * → { ok, username, valid, available }. Live check for the forms; the
+ * create / reset endpoints validate again (409 when taken).
+ */
+router.get("/username-available", requireCreateOrReset, async (req, res) => {
+  try {
+    const username = normUsername(req.query.username);
+    const excludeId = Number(req.query.excludeId) || null;
+    const valid = USERNAME_RE.test(username);
+    const available = valid ? !(await usernameTaken(username, excludeId)) : false;
+    return res.json({ ok: true, username, valid, available });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
 // ===========================================================================
 // List / detail
 // ===========================================================================
@@ -202,8 +244,7 @@ router.post("/", requirePermission("account_management.create"), async (req, res
     }
 
     // --- duplicates -----------------------------------------------------------
-    const dupeUsername = await query("SELECT id FROM users WHERE username = ? LIMIT 1", [cleanUsername]);
-    if (dupeUsername.length) {
+    if (await usernameTaken(cleanUsername)) {
       return res.status(409).json({ ok: false, message: "That username is already taken." });
     }
     const dupeEmail = await query("SELECT id FROM users WHERE email = ? LIMIT 1", [cleanEmail]);
@@ -626,6 +667,38 @@ router.post("/:id/reset-password", requirePermission("account_management.reset_p
       return res.status(400).json({ ok: false, message: "Account has no email address on file." });
     }
 
+    // Optional: the admin sets / changes the account's username in the same step.
+    const requested = (req.body || {}).username;
+    let usernameChanged = false;
+    if (requested !== undefined && requested !== null && String(requested).trim() !== "") {
+      const nextUsername = normUsername(requested);
+      if (!USERNAME_RE.test(nextUsername)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Username must be 3–64 characters: lowercase letters, digits, dot, underscore, dash.",
+        });
+      }
+      if (nextUsername !== String(existing.username || "").toLowerCase()) {
+        if (await usernameTaken(nextUsername, id)) {
+          return res.status(409).json({ ok: false, code: "USERNAME_TAKEN", message: "That username is already taken." });
+        }
+        await query("UPDATE users SET username = ? WHERE id = ?", [nextUsername, id]);
+        usernameChanged = true;
+        await logAudit({
+          req,
+          userId: req.user.id,
+          action: "account.username_changed",
+          entityType: "user",
+          entityId: id,
+          before: { username: existing.username },
+          after: { username: nextUsername },
+          metadata: { username: nextUsername, from: existing.username, to: nextUsername, via: "admin_reset_password" },
+          ip: clientIp(req),
+        });
+        existing.username = nextUsername;
+      }
+    }
+
     const { token } = await issueToken({
       userId: id,
       type: TOKEN_TYPES.PASSWORD_RESET,
@@ -644,7 +717,7 @@ router.post("/:id/reset-password", requirePermission("account_management.reset_p
       ip: clientIp(req),
     });
 
-    return res.json({ ok: true, message: `Password reset email sent to ${existing.email}.` });
+    return res.json({ ok: true, message: `Password reset email sent to ${existing.email}.`, username: existing.username, usernameChanged });
   } catch (err) {
     if (err.code === "SMTP_NOT_CONFIGURED") {
       return res.status(503).json({ ok: false, message: err.message });

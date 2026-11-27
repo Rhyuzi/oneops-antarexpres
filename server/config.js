@@ -129,7 +129,9 @@ const config = {
     invitationExpiryMinutes: int(env.ACCOUNT_INVITATION_EXPIRY_MINUTES, 1440),
     resetExpiryMinutes: int(env.PASSWORD_RESET_EXPIRY_MINUTES, 30),
     // Automated tests swap the transport; never sends real mail.
-    mockTransport: bool(env.EMAIL_TRANSPORT, false) === true && env.EMAIL_TRANSPORT === "mock",
+    // (bool("mock") is false, so the previous `bool(...) === true && ... === "mock"`
+    // could never be true and EMAIL_TRANSPORT=mock still sent real mail.)
+    mockTransport: String(env.EMAIL_TRANSPORT || "").trim().toLowerCase() === "mock",
   },
 
   // --- Password policy ----------------------------------------------------------

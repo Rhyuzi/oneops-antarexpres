@@ -92,11 +92,12 @@ export const authStore = {
     state.user = null
     state.checked = true
   },
-  async login(username: string, password: string): Promise<boolean> {
+  /** `identifier`: username OR email (one field). */
+  async login(identifier: string, password: string): Promise<boolean> {
     state.loading = true
     state.error = null
     try {
-      const resp = await axios.post('/api/auth/login', { username, password })
+      const resp = await axios.post('/api/auth/login', { identifier, password })
       state.user = resp.data.user
       state.checked = true
       return true

@@ -158,6 +158,18 @@ export async function updateFolder(
   return resp.data.folder
 }
 
+export interface FolderTreeResult {
+  /** Relative path → folder id (paths as normalized by the server). */
+  folders: Record<string, number>
+  created: Array<{ path: string; id: number }>
+  /** Folders that already existed (same name) and were reused instead of creating twins. */
+  merged: Array<{ path: string; id: number; name: string }>
+}
+/** Drag & drop / paste of local folders: makes sure the folder tree exists under parentId. */
+export async function ensureFolderTree(parentId: number | null, paths: string[], source: 'drop' | 'paste' = 'drop'): Promise<FolderTreeResult> {
+  return (await axios.post('/api/storage/folders/tree', { parentId, paths, source })).data
+}
+
 /** R2 objects of a deletion: removed now / queued for cleanup (failed). */
 export interface R2DeleteResult { objects: number; deleted: number; failed: number }
 
@@ -232,8 +244,11 @@ export function putFileToR2(
   })
 }
 
-export async function completeUpload(uploadToken: string): Promise<StorageFile> {
-  const resp = await axios.post('/api/storage/files/complete-upload', { uploadToken })
+/** Where an upload came from (audit trail): the Upload button, drag & drop or paste. */
+export type UploadSource = 'picker' | 'drop' | 'paste'
+
+export async function completeUpload(uploadToken: string, source: UploadSource = 'picker'): Promise<StorageFile> {
+  const resp = await axios.post('/api/storage/files/complete-upload', { uploadToken, source })
   return resp.data.file
 }
 

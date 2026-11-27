@@ -293,8 +293,11 @@ function requireRole(role) {
 // ---------------------------------------------------------------------------
 
 async function handleLogin(req, res) {
-  const { username, password } = req.body || {};
-  if (!username || !password) {
+  // One field: username OR email (`identifier`; `username` kept for older clients).
+  const body = req.body || {};
+  const username = typeof body.identifier === "string" && body.identifier.trim() ? body.identifier : body.username;
+  const password = body.password;
+  if (typeof username !== "string" || !username.trim() || typeof password !== "string" || !password) {
     return res
       .status(400)
       .json({ ok: false, message: "Username and password are required." });
@@ -312,8 +315,10 @@ async function handleLogin(req, res) {
       `SELECT id, username, full_name, password_hash, is_active, status,
               UNIX_TIMESTAMP(token_valid_after) AS token_valid_after_ts,
               UNIX_TIMESTAMP() AS db_now
-         FROM users WHERE username = ? OR email = ? LIMIT 1`,
-      [String(username).trim(), String(username).trim()]
+         FROM users
+        WHERE ${String(username).includes("@") ? "LOWER(email) = ?" : "LOWER(username) = ?"}
+        LIMIT 1`,
+      [String(username).trim().toLowerCase()]
     );
   } catch (err) {
     console.error("[auth] login query failed:", err.dbMessage || err.message);

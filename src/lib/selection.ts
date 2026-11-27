@@ -137,3 +137,28 @@ export function syncSelection(s: SelectionState, keys: readonly string[]): Selec
 export function selectedInOrder(s: SelectionState, keys: readonly string[]): string[] {
   return keys.filter((k) => s.selected.has(k))
 }
+
+// -- Selection mode (checkboxes hidden until the user starts selecting) -------------------
+//
+//   off: checkboxes hidden; plain click / arrows only move the focus (focusItem);
+//        Ctrl/Cmd or Shift (click or arrows), Space, Ctrl/Cmd+A, the header "Select"
+//        button or "Select" in an item's ⋮ menu switch the mode on.
+//   on:  checkboxes shown, all rules above apply; "Done" / Esc switch it off and clear.
+
+/** true when this click / key starts selecting (modifier held). */
+export function startsSelection(mod: Modifiers = {}): boolean {
+  return Boolean(mod.shift || mod.ctrl)
+}
+
+/** Focus keys[index] without selecting it (mode off). */
+export function focusItem(s: SelectionState, keys: readonly string[], index: number): SelectionState {
+  if (index < 0 || index >= keys.length) return s
+  return { ...s, active: index, anchor: index, base: s.selected }
+}
+
+/** "Select" in an item's ⋮ menu: add the item (never toggles it off); it becomes anchor + active. */
+export function pickItem(s: SelectionState, keys: readonly string[], index: number): SelectionState {
+  if (index < 0 || index >= keys.length) return s
+  const selected = new Set([...s.selected, keys[index]])
+  return { selected, anchor: index, active: index, base: selected }
+}

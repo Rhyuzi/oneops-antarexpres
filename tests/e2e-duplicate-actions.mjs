@@ -230,15 +230,22 @@ async function main() {
     await test('Create duplicate (409): button restored after failure, retry sends a new request', async () => {
       await evaluate(`__t.btn('New account').click()`)
       await waitFor(`!!document.querySelector('#na-name')`, 'create dialog')
+      // A duplicate USERNAME is now caught by the live check (Create disabled) …
       await evaluate(`__t.type(document.querySelector('#na-name'), 'E2E Dup Test');
         __t.type(document.querySelector('#na-email'), 'other_${user}@test.local');
         __t.type(document.querySelector('#na-username'), '${user}');
         [...__t.modal().querySelectorAll('input[type=checkbox]')].find((c) => c.parentElement.textContent.includes('finance')).click()`)
+      await waitFor(`document.querySelector('[data-testid="create-username-status"]')?.dataset.status === 'taken'`, 'username taken (live check)', 20000)
+      assert(await evaluate(`__t.state(__t.btn('Create', __t.modal())).disabled`), 'Create disabled for an existing username')
+      // … so the server-side 409 path is exercised with a duplicate EMAIL.
+      await evaluate(`__t.type(document.querySelector('#na-username'), 'other_${user}');
+        __t.type(document.querySelector('#na-email'), '${user}@test.local')`)
+      await waitFor(`!__t.state(__t.btn('Create', __t.modal())).disabled`, 'Create enabled again', 20000)
       const first = await rapidAndSettle(`__t.btn('Create', __t.modal())`, 'POST', /^\/api\/accounts$/)
       assert(first.n === 1, `failed-create requests = ${first.n}`)
       const st = await evaluate(`__t.state(__t.btn('Create', __t.modal()))`)
       assert(st && !st.disabled && !st.busy, `button stuck after failure: ${JSON.stringify(st)}`)
-      const toast = await evaluate(`document.body.textContent.includes('already taken')`)
+      const toast = await evaluate(`document.body.textContent.includes('already registered')`)
       assert(toast, 'error notification missing')
       const retry = await rapidAndSettle(`__t.btn('Create', __t.modal())`, 'POST', /^\/api\/accounts$/, { clicks: 1 })
       assert(retry.n === 1, `retry requests = ${retry.n}`)

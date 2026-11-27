@@ -76,6 +76,8 @@ function computeFolderPermissions(userRoles, folderChainIds, permissionRows, rol
       }
     }
     if (matched) {
+      // Managing Data Warrior permissions is reserved for Super Admin.
+      result.can_manage_permissions = false;
       result.granted = true;
       result.sourceFolderId = Number(fid);
       return result; // nearest level wins; stop

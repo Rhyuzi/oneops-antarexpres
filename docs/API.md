@@ -9,7 +9,7 @@ browser sends it automatically; API clients must capture and replay the
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/login` | — | `{username, password}` → sets session cookie, returns user |
+| POST | `/api/auth/login` | — | `{identifier, password}`: `identifier` is the **username or the email** (one field; trimmed, case-insensitive; contains `@` → matched against email). `{username, password}` is still accepted. Wrong password, unknown user and inactive accounts all get the same 401 `Invalid username or password.` |
 | POST | `/api/auth/logout` | — | Clears the cookie |
 | GET | `/api/auth/me` | — | Current user (or `null`) |
 
@@ -52,13 +52,21 @@ Audit rows `folder.move` / `file.move` keep `from_path` / `to_path` (`Root / 202
 
 | GET | `/api/storage/download-selection(/summary)?folders=1,2&files=3,4&name=<folder>` | Zip of a multi-selection: the selected folders (with their sub-folders, per-folder permission) plus the selected files (download permission on their folder; any refusal → 403, all-or-nothing). Files of selected folders keep `<folder>/…`; selected files go to the zip root; names are made unique. 400 `NOTHING_SELECTED`. Same limits as download-all. Audit `folder.download_selection` |
 
-**Multi-select (UI, `src/lib/selection.ts`).** Click selects one item; Ctrl/Cmd+click toggles; Shift+click selects a range from the anchor (earlier Ctrl/Cmd picks are kept). Shift+↑/↓ extends the range, Ctrl/Cmd+↑/↓ moves the focus only, Space toggles the focused item, Ctrl/Cmd+A selects all, Esc clears, Enter or double-click opens. A Select-all checkbox (checked / indeterminate / unchecked) and a bulk bar (Download / Move / Delete) follow the selection. Move calls the single-item endpoints for each item; Delete calls `POST /api/storage/bulk-delete` once.
+**Selection mode.** Checkboxes are hidden by default. They appear (with Select all and the bulk bar) after **Select** in the list header, **Select** in an item's ⋮ menu (that item becomes selected), Ctrl/Cmd+click, Shift+click, Shift+↑/↓, Space or Ctrl/Cmd+A. Outside selection mode a plain click or ↑/↓ only moves the focus. **Done** or Esc hides the checkboxes and clears the selection; opening another folder ends the mode too.
+
+**Multi-select (UI, `src/lib/selection.ts`).** In selection mode a click selects one item; Ctrl/Cmd+click toggles; Shift+click selects a range from the anchor (earlier Ctrl/Cmd picks are kept). Shift+↑/↓ extends the range, Ctrl/Cmd+↑/↓ moves the focus only, Space toggles the focused item, Ctrl/Cmd+A selects all, Esc clears, Enter or double-click opens. A Select-all checkbox (checked / indeterminate / unchecked) and a bulk bar (Download / Move / Delete) follow the selection. Move calls the single-item endpoints for each item; Delete calls `POST /api/storage/bulk-delete` once.
 
 **Deletion and Cloudflare R2** (`server/storageDelete.js`). Deleting a folder (single or bulk) walks all its live sub-folders recursively, collects every file and every `storage_file_versions` object key, and deletes them from R2 in batches of up to 1,000 keys (`DeleteObjects`, `server/r2.js deleteObjects`). After that, the folders and files are soft-deleted in the DB. Objects R2 does not delete (a per-object error, or a failed or unreachable request) are logged with the error code only and written to `storage_r2_cleanup` (migration 016), so no orphan goes undetected. The DB delete still completes. Retry them with `npm run storage:r2-cleanup` (`-- --list` only shows the count); a row gets `resolved_at` once R2 confirms. Audit metadata: `folders_deleted`, `files_deleted`, `r2_objects`, `r2_deleted`, `r2_failed` (`file.delete` uses the `r2_*` fields).
 
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/api/storage/bulk-delete` | `{ folderIds: number[], fileIds: number[] }` (max 1,000 each). Every item needs `can_delete`; items that fail are skipped with `{ kind, id, reason: forbidden | not_found }`. Files inside a selected folder are covered by that folder and are not counted twice. One R2 purge for everything. Returns `{ deleted: { items, folders, files }, r2, skipped }`; 400 `NOTHING_SELECTED`. Audit `folder.bulk_delete` |
+
+**Drag & drop / paste from the local file manager** (`src/lib/localDrop.ts`, store `uploadLocal`). Files and whole folders can be dropped onto the open folder. Folders are walked recursively with `webkitGetAsEntry`, empty sub-folders included. Ctrl/Cmd+V with files on the clipboard uploads them into the open folder; a paste inside an input is ignored. The folder tree is created first with the endpoint below, then every file is uploaded into its folder (`complete-upload` with `source: "drop" | "paste"`, kept in the `file.upload` audit). A progress bar shows the folders being prepared and then files done / total. The notifications list merged folders, the upload summary and failed files. Loose files dropped on Root are refused, because files live inside folders; dropping folders on Root needs Super Admin.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/storage/folders/tree` | `{ parentId \| null, paths: string[], source?: "drop" \| "paste" }`. `paths` are relative folder paths (`"Invoices/2026/Nov"`); ancestors are added. **A folder whose name already exists in the target (case-insensitive) is reused, i.e. merged, never duplicated**; missing folders are created. Permissions are checked before anything is written: creating needs `can_create_folder` on the nearest existing ancestor, and a new root folder needs Super Admin (403 `ROOT_ADMIN_ONLY`). If only merges are needed, no create right is required. Returns `{ folders: { path → id }, created: [{path,id}], merged: [{path,id,name}] }`. 400 `INVALID_NAME` / `PATH_TOO_DEEP` (> 32 levels) / `TOO_MANY_FOLDERS` (> 2,000). Audit `folder.upload_tree` (created / merged counts and paths, source) |
 
 ## Storage — Files
 
@@ -67,7 +75,7 @@ Audit rows `folder.move` / `file.move` keep `from_path` / `to_path` (`Root / 202
 | GET | `/api/storage/files` | `can_view` per folder | Query: `folderId` (number or `root`), `search`, `page`, `pageSize`, `sort` (`created_at`/`file_name`/`file_size`/`uploader`), `order` (`asc`/`desc`) |
 | POST | `/api/storage/files/upload-url` | `can_upload` | `{folderId, fileName, fileSize, mimeType}` → `{uploadUrl, objectKey, uploadToken}` |
 | PUT (to R2) | *(presigned URL)* | — | Browser uploads directly to Cloudflare R2 |
-| POST | `/api/storage/files/complete-upload` | `can_upload` | `{uploadToken}` → verifies object via HeadObject, persists metadata, returns file |
+| POST | `/api/storage/files/complete-upload` | `can_upload` | `{uploadToken, source?}` → verifies object via HeadObject, persists metadata, returns file. `source` (`picker` / `drop` / `paste`) is kept in the `file.upload` audit |
 | GET | `/api/storage/files/:id` | `can_view` | File + version history |
 | GET | `/api/storage/files/:id/download-url` | `can_download` | Short-lived attachment presigned URL |
 | GET | `/api/storage/files/:id/preview-url` | `can_preview` | Short-lived inline presigned URL |
@@ -91,8 +99,10 @@ by a different user, and it expires with the presigned URL.
 
 | Method | Path | Permission |
 |---|---|---|
-| GET | `/api/storage/folders/:id/permissions` | `can_manage_permissions` |
-| PUT | `/api/storage/folders/:id/permissions` | `can_manage_permissions` |
+| GET | `/api/storage/folders/:id/permissions` | **Super Admin only** (403 `SUPER_ADMIN_ONLY` for every other role) |
+| PUT | `/api/storage/folders/:id/permissions` | **Super Admin only** (403 `SUPER_ADMIN_ONLY`) |
+
+Set Permission in Data Warrior is a Super Admin feature. The permission bar, the ⋮ → Permissions entry and the modal are shown to Super Admin only. A `can_manage_permissions` row no longer grants anything to other roles (the engine forces it to false), and the modal has no "Manage" column. Super Admin always has full access, so the `super_admin` role is left out of `roles` / `permissions` in the GET response, and a PUT row for it is rejected with 400.
 
 PUT body: `{permissions: [{role_id, can_view, can_upload, …}]}` — replaces
 the folder's explicit rows; roles with no checked capability get their row

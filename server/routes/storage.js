@@ -26,6 +26,14 @@ const { logAudit, ACTIONS } = require("../audit");
 const { createZip } = require("../zipWriter");
 const bulk = require("../folderBulk");
 const storageDelete = require("../storageDelete");
+const folderTree = require("../folderTreeUpload");
+
+/** Data Warrior permission management is a Super Admin–only feature. */
+function requireStorageSuperAdmin(req, res) {
+  if (req.user && Array.isArray(req.user.roles) && req.user.roles.includes("super_admin")) return true;
+  res.status(403).json({ ok: false, code: "SUPER_ADMIN_ONLY", message: "Only a Super Admin can manage Data Warrior permissions." });
+  return false;
+}
 
 // "Download all from folder": hard limits (classic zip, server memory per file).
 const MAX_ZIP_FILES = 2000;
@@ -683,6 +691,53 @@ router.post("/bulk-delete", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Drag & drop / paste of local folders: ensure a folder tree (merge twins)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/storage/folders/tree { parentId: number|null, paths: string[], source?: "drop"|"paste" }
+ * paths are relative folder paths ("A", "A/B"). Existing folders with the same
+ * name are reused (merged) instead of creating twins; missing ones are created.
+ * Returns { folders: { path → id }, created: [{path,id}], merged: [{path,id,name}] }.
+ */
+router.post("/folders/tree", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const parentId = isRoot(body.parentId) ? null : Number(body.parentId);
+    if (parentId !== null && !(Number.isInteger(parentId) && parentId > 0)) {
+      return res.status(400).json({ ok: false, message: "Invalid parent folder." });
+    }
+    const source = body.source === "paste" ? "paste" : "drop";
+    const out = await folderTree.ensureFolderTree({ parentId, paths: body.paths, user: req.user });
+    if (out.created.length || out.merged.length) {
+      await logAudit({
+        req,
+        userId: req.user.id,
+        action: ACTIONS.FOLDER_UPLOAD_TREE,
+        entityType: "folder",
+        entityId: parentId,
+        after: { created: out.created.map((c) => c.path).slice(0, 100) },
+        metadata: {
+          parent: await folderPathText(parentId),
+          source,
+          created: out.created.length,
+          merged: out.merged.length,
+          created_paths: out.created.map((c) => c.path).slice(0, 50),
+          merged_paths: out.merged.map((m) => m.path).slice(0, 50),
+        },
+        ip: clientIp(req),
+      });
+    }
+    return res.json({ ok: true, ...out });
+  } catch (err) {
+    if (err instanceof folderTree.TreeError) {
+      return res.status(err.status).json({ ok: false, code: err.code, message: err.message });
+    }
+    return fail(res, err);
+  }
+});
+
 // GET /api/storage/folders/:id — one folder with permissions
 router.get("/folders/:id", async (req, res) => {
   try {
@@ -892,15 +947,17 @@ router.delete("/folders/:id", async (req, res) => {
 // GET /api/storage/folders/:id/permissions
 router.get("/folders/:id/permissions", async (req, res) => {
   try {
+    if (!requireStorageSuperAdmin(req, res)) return undefined;
     const id = Number(req.params.id);
-    const perms = await authorizeFolder(req.user, id, "can_manage_permissions");
+    await authorizeFolder(req.user, id, "can_view"); // 404 for unknown folders
+    // Super Admin always has full access — the role is not configurable here.
     const rows = await query(
       `SELECT p.*, r.name AS role_name FROM storage_folder_permissions p
          JOIN roles r ON r.id = p.role_id
-        WHERE p.folder_id = ? ORDER BY r.name`,
+        WHERE p.folder_id = ? AND r.name <> 'super_admin' ORDER BY r.name`,
       [id]
     );
-    const roles = await query("SELECT id, name, description FROM roles ORDER BY name");
+    const roles = await query("SELECT id, name, description FROM roles WHERE name <> 'super_admin' ORDER BY name");
     return res.json({
       ok: true,
       permissions: rows.map((r) => ({
@@ -926,8 +983,9 @@ router.get("/folders/:id/permissions", async (req, res) => {
 // PUT /api/storage/folders/:id/permissions — replace permission rows
 router.put("/folders/:id/permissions", async (req, res) => {
   try {
+    if (!requireStorageSuperAdmin(req, res)) return undefined;
     const id = Number(req.params.id);
-    await authorizeFolder(req.user, id, "can_manage_permissions");
+    await authorizeFolder(req.user, id, "can_view"); // 404 for unknown folders
 
     const incoming = req.body && req.body.permissions;
     if (!Array.isArray(incoming)) {
@@ -935,8 +993,9 @@ router.put("/folders/:id/permissions", async (req, res) => {
     }
 
     // Validate each row and collect changes for the audit log.
+    // super_admin is not configurable (always full access).
     const validRoles = new Set(
-      (await query("SELECT id FROM roles")).map((r) => Number(r.id))
+      (await query("SELECT id FROM roles WHERE name <> 'super_admin'")).map((r) => Number(r.id))
     );
     const seenRoles = new Set();
     const rowsToWrite = [];
@@ -1197,6 +1256,7 @@ router.post("/files/upload-url", async (req, res) => {
 router.post("/files/complete-upload", async (req, res) => {
   try {
     const { uploadToken } = req.body || {};
+    const uploadSource = ["drop", "paste", "picker"].includes((req.body || {}).source) ? req.body.source : "picker";
     if (typeof uploadToken !== "string" || !uploadToken.includes(".")) {
       return res.status(400).json({ ok: false, message: "uploadToken is required." });
     }
@@ -1302,7 +1362,7 @@ router.post("/files/complete-upload", async (req, res) => {
       userId: req.user.id, action: ACTIONS.FILE_UPLOAD, entityType: "file",
       entityId: result.insertId,
       after: { file_name: finalName, folder_id: fid, size: Number(info.contentLength), mime_type: payload.m },
-      metadata: { file_name: finalName, folder_id: fid, size: Number(info.contentLength) },
+      metadata: { file_name: finalName, folder_id: fid, size: Number(info.contentLength), source: uploadSource },
       ip: clientIp(req),
     });
 

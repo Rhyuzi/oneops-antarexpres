@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowUpDown,
+  CheckSquare,
   ChevronRight,
   FileArchive,
   FileSpreadsheet,
@@ -36,6 +37,9 @@ import {
   clearSelection,
   clickItem,
   emptySelection,
+  focusItem,
+  pickItem,
+  startsSelection,
   modifiersOf,
   moveActive,
   selectAll,
@@ -47,6 +51,7 @@ import {
   type NavKey,
   type SelectionState,
 } from '../lib/selection'
+import { collectDataTransfer } from '../lib/localDrop'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
 import { formatNumber, t, tn, type MessageKey } from '../i18n'
 import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
@@ -113,10 +118,8 @@ const canCreateFolder = computed(() => {
   return currentPerms.value?.can_create_folder ?? false
 })
 
-const canManagePerms = computed(() => {
-  if (isRoot.value) return false
-  return currentPerms.value?.can_manage_permissions ?? false
-})
+/** Data Warrior permissions are managed by Super Admin only (backend: 403 for others). */
+const canManagePerms = computed(() => !isRoot.value && auth.isSuperAdmin)
 
 const visibleFolders = computed(() => {
   if (isRoot.value) return store.state.folders.filter((f) => f.parent_id === null)
@@ -155,6 +158,8 @@ function closeAllMenus(): void {
 
 // -- multi-select (folders + files of the view; rules in lib/selection.ts) ---------------
 const selection = ref<SelectionState>(emptySelection())
+/** Selection mode: checkboxes + bulk bar are shown only while it is on. */
+const selectMode = ref(false)
 const folderKey = (id: number) => `folder:${id}`
 const fileKey = (id: number) => `file:${id}`
 /** Display order: folders, then files (the same order as on screen, in both views). */
@@ -166,6 +171,7 @@ watch(
   () => store.state.currentFolderId,
   () => {
     selection.value = emptySelection()
+    selectMode.value = false
   }
 )
 const isSelected = (key: string) => selection.value.selected.has(key)
@@ -194,11 +200,34 @@ function focusActive(): void {
     el?.scrollIntoView({ block: 'nearest' })
   })
 }
-/** Item click: plain / Ctrl·Cmd / Shift (see lib/selection.ts). */
+function enterSelectMode(): void {
+  selectMode.value = true
+}
+/** "Done" / Esc: hide the checkboxes again and clear the selection. */
+function exitSelectMode(): void {
+  selectMode.value = false
+  selection.value = clearSelection(selection.value)
+}
+/** "Select" in an item's ⋮ menu: selection mode on, this item selected. */
+function selectFromMenu(key: string): void {
+  closeAllMenus()
+  selectMode.value = true
+  selection.value = pickItem(selection.value, itemKeys.value, itemKeys.value.indexOf(key))
+  focusActive()
+}
+/** Item click: plain / Ctrl·Cmd / Shift (see lib/selection.ts). Outside selection mode a plain click only focuses. */
 function onItemClick(e: MouseEvent, key: string): void {
   closeAllMenus()
+  const mods = modifiersOf(e)
+  const index = itemKeys.value.indexOf(key)
+  if (!selectMode.value && !startsSelection(mods)) {
+    selection.value = focusItem(selection.value, itemKeys.value, index)
+    focusActive()
+    return
+  }
   if (e.shiftKey) window.getSelection()?.removeAllRanges() // no text selection on Shift+click
-  selection.value = clickItem(selection.value, itemKeys.value, itemKeys.value.indexOf(key), modifiersOf(e))
+  enterSelectMode()
+  selection.value = clickItem(selection.value, itemKeys.value, index, mods)
   focusActive()
 }
 /** Checkbox: toggles (like Ctrl/Cmd+click); Shift+checkbox selects a range. */
@@ -222,10 +251,13 @@ function onItemKeydown(e: KeyboardEvent): void {
   const mods = modifiersOf(e)
   if ((NAV_KEYS as string[]).includes(e.key)) {
     e.preventDefault()
-    selection.value = moveActive(selection.value, itemKeys.value, e.key as NavKey, mods)
+    if (!selectMode.value && mods.shift) enterSelectMode()
+    // Outside selection mode plain arrows only move the focus (like Ctrl/Cmd+arrow).
+    selection.value = moveActive(selection.value, itemKeys.value, e.key as NavKey, selectMode.value ? mods : { ctrl: true })
     focusActive()
   } else if (e.key === ' ') {
     e.preventDefault()
+    enterSelectMode()
     selection.value = toggleActive(selection.value, itemKeys.value)
   } else if (e.key === 'Enter') {
     e.preventDefault()
@@ -233,9 +265,10 @@ function onItemKeydown(e: KeyboardEvent): void {
     if (i !== null) openItem(itemKeys.value[i])
   } else if (mods.ctrl && e.key.toLowerCase() === 'a') {
     e.preventDefault()
+    enterSelectMode()
     selection.value = selectAll(selection.value, itemKeys.value)
-  } else if (e.key === 'Escape') {
-    selection.value = clearSelection(selection.value)
+  } else if (e.key === 'Escape' && selectMode.value) {
+    exitSelectMode()
   }
 }
 function onSelectAll(): void {
@@ -482,11 +515,35 @@ function openFilePicker(): void {
   input.click()
 }
 
-function onDrop(ev: DragEvent): void {
+/** Drop target: a folder (files + new sub-folders) or Root (folders only, Super Admin). */
+const dropAllowed = computed(() => canUpload.value || (isRoot.value && auth.isSuperAdmin))
+
+/** Drag & drop from the local file manager: files and whole folders (merged into same-named folders). */
+async function onDrop(ev: DragEvent): Promise<void> {
   dragOver.value = false
-  const files = ev.dataTransfer?.files
-  if (files?.length) void store.uploadFiles(Array.from(files))
+  if (!dropAllowed.value) return
+  // Entries must be read synchronously inside the event (collectDataTransfer does that first).
+  const entries = await collectDataTransfer(ev.dataTransfer)
+  if (entries.length) await store.uploadLocal(entries, 'drop')
 }
+
+/** Ctrl/Cmd+V with files on the clipboard → upload to the current folder. */
+async function onPaste(ev: ClipboardEvent): Promise<void> {
+  const target = ev.target as HTMLElement | null
+  if (target && (target.closest('input, textarea, select, [contenteditable="true"]'))) return
+  const dt = ev.clipboardData
+  if (!dt || !Array.from(dt.items || []).some((i) => i.kind === 'file')) return
+  ev.preventDefault()
+  if (!dropAllowed.value) {
+    store.toast('error', t('storage.pasteNotAllowed'))
+    return
+  }
+  const entries = await collectDataTransfer(dt)
+  if (entries.length) await store.uploadLocal(entries, 'paste')
+}
+const pasteListener = (ev: ClipboardEvent) => void onPaste(ev)
+onMounted(() => window.addEventListener('paste', pasteListener))
+onBeforeUnmount(() => window.removeEventListener('paste', pasteListener))
 
 function folderMenuId(f: StorageFolder): string {
   return `folder-${f.id}`
@@ -576,7 +633,8 @@ function folderMenuId(f: StorageFolder): string {
         <div
           class="card flex min-h-[400px] flex-col p-4 sm:p-5"
           :class="{ 'ring-2 ring-indigo-400': dragOver }"
-          @dragover.prevent="dragOver = canUpload"
+          data-testid="drop-zone"
+          @dragover.prevent="dragOver = dropAllowed"
           @dragleave="dragOver = false"
           @drop.prevent="onDrop"
         >
@@ -667,6 +725,7 @@ function folderMenuId(f: StorageFolder): string {
           <div
             v-if="canManagePerms"
             class="mb-4 flex items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5"
+            data-testid="permission-bar"
           >
             <p class="text-sm text-indigo-800">
               {{ t('storage.youManagePermissions') }}
@@ -698,14 +757,20 @@ function folderMenuId(f: StorageFolder): string {
             <p class="mt-3 text-sm text-slate-500">
               {{ store.state.search ? t('storage.noSearchResults') : t('storage.emptyFolder') }}
             </p>
-            <p v-if="canUpload && !store.state.search" class="mt-1 text-xs text-slate-400">
+            <p v-if="dropAllowed && !store.state.search" class="mt-1 text-xs text-slate-400">
               {{ t('storage.dropHint') }}
             </p>
           </div>
 
           <template v-else>
             <!-- Select all + bulk action bar (multi-select) -->
-            <div class="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2" :class="selectedKeys.length ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-white'" data-testid="selection-bar">
+            <div v-if="!selectMode" class="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2" data-testid="selection-bar">
+              <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" data-testid="select-mode" @click="enterSelectMode">
+                <CheckSquare :size="15" /> {{ t('storage.selModeStart') }}
+              </button>
+              <span class="hidden text-xs text-slate-400 md:inline">{{ t('storage.selModeHint') }}</span>
+            </div>
+            <div v-else class="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2" :class="selectedKeys.length ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-white'" data-testid="selection-bar">
               <label class="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
@@ -757,6 +822,9 @@ function folderMenuId(f: StorageFolder): string {
                   <X :size="15" /> {{ t('storage.selClear') }}
                 </button>
               </div>
+              <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" :class="selectedKeys.length ? '' : 'ml-auto'" data-testid="select-exit" @click="exitSelectMode">
+                {{ t('storage.selModeExit') }}
+              </button>
             </div>
 
             <!-- Folders section -->
@@ -782,8 +850,10 @@ function folderMenuId(f: StorageFolder): string {
                   @keydown="onItemKeydown"
                 >
                   <input
+                    v-if="selectMode"
                     type="checkbox"
                     class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                    data-testid="item-checkbox"
                     tabindex="-1"
                     :checked="isSelected(folderKey(folder.id))"
                     :aria-label="t('storage.selItem', { name: folder.name })"
@@ -800,6 +870,7 @@ function folderMenuId(f: StorageFolder): string {
                   </div>
                   <button
                     class="absolute right-2 top-2 rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                    data-testid="item-menu"
                     @click.stop="openMenuId = openMenuId === folderMenuId(folder) ? null : folderMenuId(folder)"
                   >
                     <MoreVertical :size="16" />
@@ -811,6 +882,13 @@ function folderMenuId(f: StorageFolder): string {
                     class="absolute right-2 top-10 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
                     @click.stop
                   >
+                    <button
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      data-testid="menu-select"
+                      @click="selectFromMenu(folderKey(folder.id))"
+                    >
+                      <CheckSquare :size="15" /> {{ t('storage.menuSelect') }}
+                    </button>
                     <button
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                       @click="store.navigateTo(folder.id)"
@@ -844,8 +922,9 @@ function folderMenuId(f: StorageFolder): string {
                       <FolderInput :size="15" /> {{ t('common.move') }}
                     </button>
                     <button
-                      v-if="folder.permissions.can_manage_permissions"
+                      v-if="auth.isSuperAdmin"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      data-testid="menu-permissions"
                       @click="permissionFolder = folder"
                     >
                       <Shield :size="15" /> {{ t('storage.permissions') }}
@@ -869,7 +948,7 @@ function folderMenuId(f: StorageFolder): string {
                 <div
                   v-for="folder in visibleFolders"
                   :key="folder.id"
-                  class="group flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
+                  class="group relative flex cursor-pointer items-center gap-3 border-b border-slate-100 px-4 py-3 last:border-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 select-none"
                   :class="isSelected(folderKey(folder.id)) ? 'bg-indigo-50' : 'hover:bg-slate-50'"
                   :data-item-key="folderKey(folder.id)"
                   :data-selected="isSelected(folderKey(folder.id)) ? 'true' : undefined"
@@ -881,8 +960,10 @@ function folderMenuId(f: StorageFolder): string {
                   @keydown="onItemKeydown"
                 >
                   <input
+                    v-if="selectMode"
                     type="checkbox"
                     class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                    data-testid="item-checkbox"
                     tabindex="-1"
                     :checked="isSelected(folderKey(folder.id))"
                     :aria-label="t('storage.selItem', { name: folder.name })"
@@ -894,10 +975,75 @@ function folderMenuId(f: StorageFolder): string {
                   <p class="hidden text-xs text-slate-400 sm:block">{{ formatDate(folder.created_at) }}</p>
                   <button
                     class="rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                    data-testid="item-menu"
                     @click.stop="openMenuId = openMenuId === folderMenuId(folder) ? null : folderMenuId(folder)"
                   >
                     <MoreVertical :size="16" />
                   </button>
+                  <!-- Folder context menu -->
+                  <div
+                    v-if="openMenuId === folderMenuId(folder)"
+                    class="absolute right-2 top-10 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
+                    @click.stop
+                  >
+                    <button
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      data-testid="menu-select"
+                      @click="selectFromMenu(folderKey(folder.id))"
+                    >
+                      <CheckSquare :size="15" /> {{ t('storage.menuSelect') }}
+                    </button>
+                    <button
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      @click="store.navigateTo(folder.id)"
+                    >
+                      <Folder :size="15" /> {{ t('common.open') }}
+                    </button>
+                    <LoadingButton
+                      v-if="folder.permissions.can_download"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      :spinner-size="15"
+                      :loading="zipOps.isPending(folder.id, 'zip')"
+                      data-testid="download-all"
+                      @click="zipOps.run(folder.id, 'zip', () => downloadAll(folder.id))"
+                    >
+                      <FileArchive :size="15" /> {{ t('storage.downloadAll') }}
+                    </LoadingButton>
+                    <button
+                      v-if="folder.permissions.can_rename"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="folderOps.isBusy(folder.id)"
+                      @click="renameTarget = folder; renameValue = folder.name"
+                    >
+                      <Pencil :size="15" /> {{ t('common.rename') }}
+                    </button>
+                    <button
+                      v-if="folder.permissions.can_move"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-slate-700 hover:bg-slate-50"
+                      :disabled="folderOps.isBusy(folder.id)"
+                      @click="moveTarget = folder"
+                    >
+                      <FolderInput :size="15" /> {{ t('common.move') }}
+                    </button>
+                    <button
+                      v-if="auth.isSuperAdmin"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      data-testid="menu-permissions"
+                      @click="permissionFolder = folder"
+                    >
+                      <Shield :size="15" /> {{ t('storage.permissions') }}
+                    </button>
+                    <LoadingButton
+                      v-if="folder.permissions.can_delete"
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 text-rose-600 hover:bg-rose-50"
+                      :spinner-size="15"
+                      :loading="folderOps.isPending(folder.id, 'delete')"
+                      :disabled="folderOps.isBusy(folder.id)"
+                      @click="folderDeleteTarget = folder"
+                    >
+                      <Trash2 :size="15" /> {{ t('common.delete') }}
+                    </LoadingButton>
+                  </div>
                 </div>
               </div>
             </div>
@@ -926,8 +1072,10 @@ function folderMenuId(f: StorageFolder): string {
                 >
                   <div class="flex items-start gap-2.5">
                     <input
+                      v-if="selectMode"
                       type="checkbox"
                       class="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                      data-testid="item-checkbox"
                       tabindex="-1"
                       :checked="isSelected(fileKey(file.id))"
                       :aria-label="t('storage.selItem', { name: file.file_name })"
@@ -947,6 +1095,7 @@ function folderMenuId(f: StorageFolder): string {
                   </p>
                   <button
                     class="absolute right-2 top-2 rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                    data-testid="item-menu"
                     @click.stop="openMenuId = openMenuId === `file-${file.id}` ? null : `file-${file.id}`"
                   >
                     <MoreVertical :size="16" />
@@ -958,6 +1107,13 @@ function folderMenuId(f: StorageFolder): string {
                     class="absolute right-2 top-10 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
                     @click.stop
                   >
+                    <button
+                      class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                      data-testid="menu-select"
+                      @click="selectFromMenu(fileKey(file.id))"
+                    >
+                      <CheckSquare :size="15" /> {{ t('storage.menuSelect') }}
+                    </button>
                     <button
                       v-if="fileCaps?.can_preview"
                       class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
@@ -1035,8 +1191,10 @@ function folderMenuId(f: StorageFolder): string {
                       <td class="px-4 py-2.5">
                         <div class="flex items-center gap-2.5">
                           <input
+                            v-if="selectMode"
                             type="checkbox"
                             class="h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                            data-testid="item-checkbox"
                             tabindex="-1"
                             :checked="isSelected(fileKey(file.id))"
                             :aria-label="t('storage.selItem', { name: file.file_name })"
@@ -1059,6 +1217,7 @@ function folderMenuId(f: StorageFolder): string {
                       <td class="relative px-4 py-2.5 text-right">
                         <button
                           class="rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-700 group-hover:opacity-100"
+                          data-testid="item-menu"
                           @click.stop="openMenuId = openMenuId === `file-${file.id}` ? null : `file-${file.id}`"
                         >
                           <MoreVertical :size="16" />
@@ -1068,6 +1227,13 @@ function folderMenuId(f: StorageFolder): string {
                           class="absolute right-4 top-10 z-20 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-left shadow-lg"
                           @click.stop
                         >
+                          <button
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                            data-testid="menu-select"
+                            @click="selectFromMenu(fileKey(file.id))"
+                          >
+                            <CheckSquare :size="15" /> {{ t('storage.menuSelect') }}
+                          </button>
                           <button
                             v-if="fileCaps?.can_preview"
                             class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
@@ -1142,6 +1308,12 @@ function folderMenuId(f: StorageFolder): string {
               </div>
             </div>
           </template>
+
+          <!-- Drag & drop / paste progress -->
+          <div v-if="store.state.localUpload" class="mt-5 flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm text-indigo-800" data-testid="local-upload-progress">
+            <Loader2 :size="16" class="animate-spin" />
+            <span>{{ store.state.localUpload.phase === 'folders' ? t('storage.dropPreparing') : t('storage.dropProgress', { done: formatNumber(store.state.localUpload.done), total: formatNumber(store.state.localUpload.total) }) }}</span>
+          </div>
 
           <!-- Upload progress -->
           <div v-if="store.state.uploads.length" class="mt-5 space-y-2 border-t border-slate-100 pt-4">

@@ -1,6 +1,8 @@
 /**
  * Browser E2E (component level): Data Warrior multi-select with real mouse and
  * keyboard events (Chrome DevTools Input domain, modifiers Ctrl / Cmd / Shift).
+ *   selection mode: checkboxes hidden by default, shown via the header "Select"
+ *   button or "Select" in an item's ⋮ menu, Done / Esc hides them again;
  *   click, Ctrl+click, Cmd+click, Shift+click (down / up), Ctrl+click → Shift+click,
  *   Shift+↑/↓, Ctrl+↑/↓ (+ Space), Select all (checked / indeterminate / unchecked),
  *   bulk action bar (Delete, Move), Enter / double-click to open.
@@ -60,6 +62,9 @@ const focused = () => ev(`document.activeElement?.closest('[data-item-key]')?.qu
 const selectAllState = () => ev(`(() => { const c = document.querySelector('[data-testid="select-all"]'); return c.indeterminate ? 'some' : c.checked ? 'all' : 'none' })()`)
 const countText = () => ev(`document.querySelector('[data-testid="selected-count"]')?.innerText.trim() || ''`)
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const visibleCheckboxes = () => ev(`document.querySelectorAll('[data-testid="item-checkbox"]').length`)
+const inSelectMode = () => ev(`!!document.querySelector('[data-testid="select-exit"]')`)
+const enterSelectMode = async () => { if (!(await inSelectMode())) await ev(`document.querySelector('[data-testid="select-mode"]').click()`); await sleep(60) }
 
 let passed = 0, failed = 0
 async function test(name, fn) { try { await fn(); passed++; console.log(`  ok    ${name}`) } catch (e) { failed++; console.log(`  FAIL  ${name}\n        ${e.message}`) } }
@@ -94,7 +99,61 @@ async function main() {
   })()`)
   await openRoot()
 
+  await test('default: no checkboxes; a plain click only focuses (nothing selected, no bulk bar)', async () => {
+    assert((await visibleCheckboxes()) === 0, 'checkboxes hidden by default')
+    assert(await ev(`!!document.querySelector('[data-testid="select-mode"]')`), 'header Select button')
+    assert(!(await ev(`!!document.querySelector('[data-testid="select-all"]')`)), 'no select-all outside selection mode')
+    await clickItem('A2')
+    assert(eq(await selected(), []), `nothing selected: ${await selected()}`)
+    assert((await focused()) === 'A2', 'focused')
+    assert((await visibleCheckboxes()) === 0, 'still hidden')
+    await shot('default')
+  })
+
+  await test('header Select → every item shows a checkbox + Select all; Done hides them and clears', async () => {
+    await ev(`document.querySelector('[data-testid="select-mode"]').click()`)
+    await sleep(60)
+    assert((await visibleCheckboxes()) === NAMES.length, `checkboxes: ${await visibleCheckboxes()}`)
+    assert(await ev(`!!document.querySelector('[data-testid="select-all"]')`), 'select all shown')
+    await clickItem('A2')
+    assert(eq(await selected(), ['A2']), 'click selects in selection mode')
+    await ev(`document.querySelector('[data-testid="select-exit"]').click()`)
+    await sleep(60)
+    assert((await visibleCheckboxes()) === 0 && eq(await selected(), []), 'Done: hidden + cleared')
+  })
+
+  await test('⋮ menu → Select: selection mode on, that item selected (grid and list view)', async () => {
+    const viaMenu = async (name) => {
+      await ev(`(() => { const el = ${itemSel(name)}; el.querySelector('[data-testid="item-menu"]').click() })()`)
+      await waitFor(`!!document.querySelector('[data-testid="menu-select"]')`, 'menu with Select')
+      await ev(`document.querySelector('[data-testid="menu-select"]').click()`)
+      await sleep(60)
+    }
+    await viaMenu('A3')
+    assert(await inSelectMode(), 'mode on')
+    assert(eq(await selected(), ['A3']), `selected ${await selected()}`)
+    assert((await visibleCheckboxes()) === NAMES.length, 'checkboxes shown')
+    await viaMenu('A5')
+    assert(eq(await selected(), ['A3', 'A5']), `menu Select adds: ${await selected()}`)
+    await press('Escape')
+    assert(!(await inSelectMode()) && (await visibleCheckboxes()) === 0, 'Esc leaves selection mode')
+    await ev(`[...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'List view').click()`)
+    await waitFor(`!!document.querySelector('[data-item-key^="folder:"]')`, 'list view')
+    await viaMenu('A1')
+    assert(eq(await selected(), ['A1']) && (await visibleCheckboxes()) === NAMES.length, 'list view menu Select')
+    await ev(`document.querySelector('[data-testid="select-exit"]').click()`)
+    await ev(`[...document.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Grid view').click()`)
+    await sleep(100)
+  })
+
+  await test('Ctrl/Cmd+click outside selection mode starts selecting', async () => {
+    await clickItem('A4', { ctrl: true })
+    assert(await inSelectMode(), 'mode on')
+    assert(eq(await selected(), ['A4']), `selected ${await selected()}`)
+  })
+
   await test('plain click selects only that item; Select all becomes indeterminate; bulk bar shows', async () => {
+    await enterSelectMode()
     await clickItem('A2')
     assert(eq(await selected(), ['A2']), `selected ${await selected()}`)
     assert((await countText()) === '1 selected', await countText())
@@ -224,7 +283,10 @@ async function main() {
   await test('Indonesian labels', async () => {
     await ev(`[...document.querySelector('aside').querySelectorAll('button[aria-pressed]')].find((b) => b.getAttribute('lang') === 'id').click()`)
     await sleep(300)
+    assert((await ev(`document.querySelector('[data-testid="select-mode"]').innerText.trim()`)) === 'Pilih', 'Select (id)')
+    await enterSelectMode()
     assert((await ev(`document.querySelector('[data-testid="selection-bar"]').innerText`)).includes('Pilih semua'), 'select all (id)')
+    assert((await ev(`document.querySelector('[data-testid="select-exit"]').innerText.trim()`)) === 'Selesai', 'Done (id)')
     await clickItem('A1')
     assert((await countText()) === '1 dipilih', await countText())
     await ev(`localStorage.setItem('oneops.locale', 'en')`)

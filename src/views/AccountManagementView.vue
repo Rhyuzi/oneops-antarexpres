@@ -25,6 +25,7 @@ import axios from 'axios'
 import { authStore } from '../stores/auth'
 import LoadingButton from '../components/LoadingButton.vue'
 import { useAsyncAction, useKeyedActions } from '../composables/useAsyncAction'
+import { useUsernameCheck, type UsernameStatus } from '../composables/useUsernameCheck'
 import { formatDateTime, formatNumber, hasKey, t, type MessageKey } from '../i18n'
 import { apiErrorMessage, localizeMessage } from '../i18n/systemMessages'
 
@@ -84,8 +85,31 @@ const editEmail = ref('')
 const rolesTarget = ref<Account | null>(null)
 const rolesDraft = ref<string[]>([])
 const resetTarget = ref<Account | null>(null)
+/** Admin reset: the username can be set / changed in the same step. */
+const resetUsername = ref('')
 const deleteTarget = ref<Account | null>(null)
 const detail = ref<Account | null>(null)
+
+// Live "username already exists" checks (server validates again on submit).
+const createUsername = computed(() => createForm.value.username)
+const createCheck = useUsernameCheck(createUsername)
+const resetCheck = useUsernameCheck(resetUsername, {
+  excludeId: computed(() => resetTarget.value?.id ?? null),
+  current: computed(() => resetTarget.value?.username ?? null),
+})
+watch(resetTarget, (a) => {
+  resetUsername.value = a ? a.username : ''
+})
+watch(showCreate, (open) => {
+  if (open) createCheck.reset()
+})
+const USERNAME_STATUS: Partial<Record<UsernameStatus, { key: MessageKey; cls: string }>> = {
+  checking: { key: 'accounts.usernameChecking', cls: 'text-slate-400' },
+  available: { key: 'accounts.usernameAvailable', cls: 'text-emerald-600' },
+  taken: { key: 'accounts.usernameExists', cls: 'text-rose-600' },
+  invalid: { key: 'accounts.usernameInvalid', cls: 'text-rose-600' },
+  error: { key: 'accounts.usernameCheckFailed', cls: 'text-amber-600' },
+}
 
 const toast = ref<{ kind: 'success' | 'error'; message: string } | null>(null)
 let toastTimer = 0
@@ -266,9 +290,14 @@ async function revokeInvitation(account: Account): Promise<void> {
 
 async function triggerReset(account: Account): Promise<void> {
   try {
-    const resp = await axios.post(`/api/accounts/${account.id}/reset-password`)
-    notify('success', localizeMessage(resp.data.message))
+    const next = resetUsername.value.trim().toLowerCase()
+    const body = next && next !== account.username.toLowerCase() ? { username: next } : {}
+    const resp = await axios.post(`/api/accounts/${account.id}/reset-password`, body)
+    notify('success', resp.data.usernameChanged
+      ? `${localizeMessage(resp.data.message)} ${t('accounts.usernameChanged', { username: resp.data.username })}`
+      : localizeMessage(resp.data.message))
     resetTarget.value = null
+    if (resp.data.usernameChanged) await loadAccounts()
   } catch (err: unknown) {
     notify('error', apiErrorMessage(err, 'accounts.resetTriggerFailed'))
   }
@@ -521,7 +550,19 @@ const selfId = computed(() => authStore.state.user?.id)
             </div>
             <div>
               <label class="label" for="na-username">{{ t('auth.username') }}</label>
-              <input id="na-username" v-model="createForm.username" class="input" maxlength="64" :placeholder="t('accounts.usernamePlaceholder')" />
+              <input
+                id="na-username"
+                v-model="createForm.username"
+                class="input"
+                maxlength="64"
+                autocapitalize="none"
+                spellcheck="false"
+                :class="createCheck.status.value === 'taken' || createCheck.status.value === 'invalid' ? 'border-rose-400' : ''"
+                :placeholder="t('accounts.usernamePlaceholder')"
+              />
+              <p v-if="USERNAME_STATUS[createCheck.status.value]" class="mt-1 text-xs" :class="USERNAME_STATUS[createCheck.status.value]!.cls" data-testid="create-username-status" :data-status="createCheck.status.value">
+                {{ t(USERNAME_STATUS[createCheck.status.value]!.key) }}
+              </p>
             </div>
             <div>
               <label class="label">{{ t('accounts.colRoles') }}</label>
@@ -553,7 +594,7 @@ const selfId = computed(() => authStore.state.user?.id)
                 class="btn btn-primary"
                 :loading-text="t('common.creating')"
                 :loading="createAction.pending"
-                :disabled="!createForm.full_name || !createForm.email || !createForm.username || !createForm.roles.length"
+                :disabled="!createForm.full_name || !createForm.email || !createForm.username || !createForm.roles.length || createCheck.blocks()"
                 @click="createAction.run()"
               >
                 {{ t('accounts.createAndInvite') }}
@@ -645,13 +686,30 @@ const selfId = computed(() => authStore.state.user?.id)
             {{ t('accounts.resetConfirmBefore') }}
             <strong>{{ resetTarget.email }}</strong>. {{ t('accounts.resetConfirmAfter') }}
           </p>
+          <div class="mt-4">
+            <label class="label" for="reset-username">{{ t('auth.username') }}</label>
+            <input
+              id="reset-username"
+              v-model="resetUsername"
+              class="input"
+              maxlength="64"
+              autocapitalize="none"
+              spellcheck="false"
+              :class="resetCheck.status.value === 'taken' || resetCheck.status.value === 'invalid' ? 'border-rose-400' : ''"
+              :placeholder="t('accounts.usernamePlaceholder')"
+            />
+            <p v-if="USERNAME_STATUS[resetCheck.status.value]" class="mt-1 text-xs" :class="USERNAME_STATUS[resetCheck.status.value]!.cls" data-testid="reset-username-status" :data-status="resetCheck.status.value">
+              {{ t(USERNAME_STATUS[resetCheck.status.value]!.key) }}
+            </p>
+            <p v-else class="mt-1 text-xs text-slate-400">{{ t('accounts.resetUsernameHint') }}</p>
+          </div>
           <div class="mt-5 flex justify-end gap-3">
             <button class="btn btn-secondary" @click="resetTarget = null">{{ t('common.cancel') }}</button>
             <LoadingButton
               class="btn btn-primary"
               :loading-text="t('common.sending')"
               :loading="accountOps.isPending(resetTarget.id, 'reset')"
-              :disabled="accountOps.isBusy(resetTarget.id)"
+              :disabled="accountOps.isBusy(resetTarget.id) || resetCheck.blocks()"
               @click="accountOps.run(resetTarget.id, 'reset', () => triggerReset(resetTarget!))"
             >
               <KeyRound :size="15" /> {{ t('accounts.sendResetEmail') }}

@@ -57,13 +57,18 @@ const submitAction = useAsyncAction(async (): Promise<void> => {
             {{ t('auth.sessionExpired') }}
           </p>
           <div>
-            <label class="label" for="username">{{ t('auth.username') }}</label>
+            <label class="label" for="username">{{ t('auth.identifier') }}</label>
             <input
               id="username"
               v-model="username"
               class="input"
               type="text"
+              name="identifier"
               autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+              maxlength="191"
+              :placeholder="t('auth.identifierPlaceholder')"
               required
               autofocus
             />
